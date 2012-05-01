@@ -64,37 +64,29 @@ import com.nokia.dempsy.mpcluster.MpClusterException;
  */
 public interface RoutingStrategy
 {
-   public static interface Outbound
-   {
-      public SlotInformation selectSlotForMessageKey(Object messageKey) throws DempsyException;
+   public List<Destination> getDestinations(Object key, Object message) throws DempsyException;
 
-      /**
-       * resetCluster is called when the cluster for the Outbound side changes. In this
-       * way implementations of this class do not need to be MpClusterWatchers
-       * @param cluster - the cluster handle containing the new state.
-       * @throws MpClusterException when the implementation has a problem accessing the cluster
-       */
-      public void resetCluster(MpCluster<ClusterInformation, SlotInformation> cluster) throws MpClusterException;
-   }
+   public static interface Outbound { }
    
    public static interface Inbound
    {
-      /**
-       * <p>resetCluster is called when the cluster for the Inbound side changes. In this
-       * way implementations of this class do not need to be MpClusterWatchers.</p>
-       * 
-       * @param cluster - the cluster handle containing the new state.
-       * @throws MpClusterException when the implementation has a problem accessing the cluster
-       */
-      public void resetCluster(MpCluster<ClusterInformation, SlotInformation> cluster,
-            List<Class<?>> messageTypes, Destination thisDestination) throws MpClusterException;
-      
       public boolean doesMessageKeyBelongToCluster(Object messageKey);
+      
+      public void stop() throws MpClusterException;
    }
    
-   public Inbound createInbound();
+   public Inbound getInbound(MpCluster<ClusterInformation, SlotInformation> cluster, List<Class<?>> acceptedMessageTypes, Destination destination) throws MpClusterException;
    
-   public Outbound createOutbound();
+   public Outbound getOutbound(MpCluster<ClusterInformation, SlotInformation> cluster) throws MpClusterException;
    
+   /**
+    * <p>reset is called when the cluster for the Inbound or Outbound side changes. This
+    * can also be invoked as part of MpClusterWatchers.</p>
+    * 
+    * @throws MpClusterException when the implementation has a problem accessing the cluster
+    */
+   public void reset(MpCluster<ClusterInformation, SlotInformation> cluster);
+   
+   public void stop (Inbound inbound) throws MpClusterException;
 }
 

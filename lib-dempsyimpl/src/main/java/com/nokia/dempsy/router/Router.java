@@ -54,8 +54,6 @@ import com.nokia.dempsy.monitoring.StatsCollector;
 import com.nokia.dempsy.mpcluster.MpCluster;
 import com.nokia.dempsy.mpcluster.MpClusterException;
 import com.nokia.dempsy.mpcluster.MpClusterSession;
-import com.nokia.dempsy.mpcluster.MpClusterSlot;
-import com.nokia.dempsy.mpcluster.MpClusterWatcher;
 import com.nokia.dempsy.serialization.SerializationException;
 import com.nokia.dempsy.serialization.Serializer;
 
@@ -95,7 +93,7 @@ public class Router implements Dispatcher
    private ApplicationDefinition applicationDefinition = null;
 
    private ConcurrentHashMap<Class<?>, Set<ClusterRouter>> routerMap = new ConcurrentHashMap<Class<?>, Set<ClusterRouter>>();
-
+   private List<ClusterRouter> clusterRouters = new ArrayList<ClusterRouter>();
    // protected for test access
    protected ConcurrentHashMap<Class<?>, Object> missingMsgTypes = new ConcurrentHashMap<Class<?>, Object>();
    private MpClusterSession<ClusterInformation, SlotInformation> mpClusterSession = null;
@@ -169,8 +167,8 @@ public class Router implements Dispatcher
       {
          if (explicitClusterDestinations == null || explicitClusterDestinations.contains(clusterDef.getClusterId()))
          {
-            ClusterRouter router = new ClusterRouter(clusterDef);
-            router.setup(false);
+            ClusterRouter clusterRouter = new ClusterRouter(clusterDef, mpClusterSession.getCluster(clusterDef.getClusterId()));
+            clusterRouters.add(clusterRouter);
          }
       }
    }
@@ -226,14 +224,15 @@ public class Router implements Dispatcher
          
          if(msgKeysValue != null)
          {
-            Set<ClusterRouter> routers = getRouter(msg.getClass());
-            if(routers != null)
+            boolean messageFailed = false;
+            for(ClusterRouter router: clusterRouters)
             {
-               for(ClusterRouter router: routers)
-                  router.route(msgKeysValue,msg);
+               boolean m = router.route(msgKeysValue,msg);
+               if(!messageFailed) { messageFailed = m; }
             }
-            else
-            {
+
+            if (statsCollector != null && messageFailed) 
+            { 
                if (statsCollector != null) statsCollector.messageNotSent(msg);
                logger.warn("No router found for message type \""+ SafeString.valueOf(msg) + 
                      (msg != null ? "\" of type \"" + SafeString.valueOf(msg.getClass()) : "") + "\"");
@@ -264,26 +263,21 @@ public class Router implements Dispatcher
       Set<ClusterRouter> routers = new HashSet<ClusterRouter>();
       for (Collection<ClusterRouter> curRouters : map.values())
          routers.addAll(curRouters);
-      for (ClusterRouter router : routers)
-         router.stop();
    }
    
    /**
     * This class routes messages within a particular cluster. It is protected for test 
     * access only. Otherwise it would be private.
     */
-   protected class ClusterRouter implements MpClusterWatcher<ClusterInformation,SlotInformation>
+   protected class ClusterRouter
    {
       private Serializer<Object> serializer;
       private ClusterId clusterId;
-      private MpCluster<ClusterInformation,SlotInformation> clusterHandle;
       private SenderFactory senderFactory = defaultSenderFactory;
-      private volatile boolean isSetup = false;
       private RoutingStrategy strategy;
-      private RoutingStrategy.Outbound strategyOutbound;
       
       @SuppressWarnings("unchecked")
-      private ClusterRouter(ClusterDefinition clusterDef) throws MpClusterException, DempsyException
+      private ClusterRouter(ClusterDefinition clusterDef, MpCluster<ClusterInformation, SlotInformation> cluster) throws MpClusterException, DempsyException
       {
          this.clusterId = new ClusterId(clusterDef.getClusterId());
          
@@ -291,71 +285,70 @@ public class Router implements Dispatcher
          if (clusterRs == null)
             throw new DempsyException("Could not retrieve the routing strategy for " + SafeString.valueOf(clusterId));
          strategy = (RoutingStrategy)clusterRs;
-         
-         strategyOutbound = strategy.createOutbound();
+         strategy.getOutbound(cluster);
+         try
+         {
+            strategy.reset(cluster);
+         }
+         catch(Throwable e)
+         {
+            logger.error("Error resetting outbound strategy for "+SafeString.valueOf(this.clusterId), e);
+         }
          
          serializer = (Serializer<Object>)clusterDef.getSerializer();
          if (serializer == null)
             throw new DempsyException("Could not retrieve the serializer for " + SafeString.valueOf(clusterId));
       }
       
-      @Override
-      public void process(MpCluster<ClusterInformation,SlotInformation> cluster)
+      public boolean route(Object key, Object message)
       {
-         // it appears that the cluster configuration has changed.
-         // we need to reset up the distributor
-         try
-         {
-            setup(true);
-         }
-         catch(MpClusterException e)
-         {
-            logger.error("Major problem with the Router. Can't respond to changes in the cluster information:", e);
-         }
-      }
-
-      public void route(Object key, Object message)
-      {
-         SlotInformation target = null;
          boolean messageFailed = true;
          Sender sender = null;
          try
          {
-            target = strategyOutbound.selectSlotForMessageKey(key);
-            if(target == null)
+            List<Destination> destinations =  strategy.getDestinations(key, message);
+            for(Destination destination: destinations)
             {
-               setup(false);
-               target = strategyOutbound.selectSlotForMessageKey(key);
-            }
-
-            if(target != null)
-            {
-               Destination destination = target.getDestination();
-
-               if (destination == null)
+               try
                {
-                  logger.error("Couldn't find a destination for " + SafeString.objectDescription(message) + 
-                        " from the cluster slot information selected " + SafeString.objectDescription(target));
-                  return;
-               }
+//                  if(targetSlotInformation != null)
+//                  {
 
-               sender = senderFactory.getSender(destination);
-               if (sender == null)
-                  logger.error("Couldn't figure out a means to send " + SafeString.objectDescription(message) +
-                        " to " + SafeString.valueOf(destination) + "");
-               else
+                     sender = senderFactory.getSender(destination);
+                     if (sender == null)
+                        logger.error("Couldn't figure out a means to send " + SafeString.objectDescription(message) +
+                              " to " + SafeString.valueOf(destination) + "");
+                     else
+                     {
+                        byte[] data = serializer.serialize(message);
+                        sender.send(data);
+                        messageFailed = false;
+                        if (statsCollector != null) statsCollector.messageSent(message);
+                     }
+
+//                  }
+//                  else
+//                  {
+//                     logger.warn("No destination found for the message " + SafeString.objectDescription(message) + 
+//                           " w ith the key " + SafeString.objectDescription(key));
+//                  }
+               }
+               catch (SerializationException e)
                {
-                  byte[] data = serializer.serialize(message);
-                  sender.send(data);
-                  messageFailed = false;
-                  if (statsCollector != null) statsCollector.messageSent(message);
+                  logger.error("Failed to serialize " + SafeString.objectDescription(message) + 
+                        " using the serializer " + SafeString.objectDescription(serializer),e);
                }
-
-            }
-            else
-            {
-               logger.warn("No destination found for the message " + SafeString.objectDescription(message) + 
-                     " with the key " + SafeString.objectDescription(key));
+               catch (MessageTransportException e)
+               {
+                  logger.warn("Failed to send " + SafeString.objectDescription(message) + 
+                        " using the sender " + SafeString.objectDescription(sender),e);
+               }
+               catch (Throwable e)
+               {
+                  logger.error("Failed to send " + SafeString.objectDescription(message) + 
+                        " using the serializer " + SafeString.objectDescription(serializer) +
+                        "\" and using the sender " + SafeString.objectDescription(sender),e);
+               }
             }
          }
          catch(DempsyException e)
@@ -363,90 +356,16 @@ public class Router implements Dispatcher
             logger.error("Failed to determine the destination for " + SafeString.objectDescription(message) + 
                   " using the routing strategy " + SafeString.objectDescription(strategy),e);
          }
-         catch (SerializationException e)
-         {
-            logger.error("Failed to serialize " + SafeString.objectDescription(message) + 
-                  " using the serializer " + SafeString.objectDescription(serializer),e);
-         }
-         catch (MessageTransportException e)
-         {
-            logger.warn("Failed to send " + SafeString.objectDescription(message) + 
-                  " using the sender " + SafeString.objectDescription(sender),e);
-         }
-         catch (Throwable e)
-         {
-            logger.error("Failed to send " + SafeString.objectDescription(message) + 
-                  " using the serializer " + SafeString.objectDescription(serializer) +
-                  "\" and using the sender " + SafeString.objectDescription(sender),e);
-         }
-         finally
-         {
-            if (statsCollector != null && messageFailed) 
-               statsCollector.messageFailed();
-         }
-      }
-      
-      public void setup(boolean force) throws MpClusterException
-      {
-         if (!isSetup || force)
-         {
-            synchronized(this)
-            {
-               if (!isSetup || force) // double checked locking
-               {
-                  isSetup = false;
-                  clusterHandle = mpClusterSession.getCluster(clusterId);
-                  clusterHandle.addWatcher(this);
-                  strategyOutbound.resetCluster(clusterHandle);
-
-                  Set<Class<?>> messageClasses = new HashSet<Class<?>>();
-
-                  Collection<MpClusterSlot<SlotInformation>> nodes = clusterHandle.getActiveSlots();
-                  if(nodes != null)
-                  {
-                     Set<Class<?>> msgClass = null;
-                     for(MpClusterSlot<SlotInformation> node: nodes)
-                     {
-                        SlotInformation slotInfo = node.getSlotInformation();
-                        if(slotInfo != null)
-                        {
-                           msgClass = slotInfo.getMessageClasses();
-                           if (msgClass != null)
-                              messageClasses.addAll(msgClass);
-                        }
-                     }
-                     
-                     // now we may have new messageClasses so we need to register with the Router
-                     for (Class<?> clazz : messageClasses)
-                     {
-                        Set<ClusterRouter> cur = Collections.newSetFromMap(new ConcurrentHashMap<ClusterRouter, Boolean>()); // potential
-                        Set<ClusterRouter> tmp = routerMap.putIfAbsent(clazz, cur);
-                        if (tmp != null)
-                           cur = tmp;
-                        cur.add(this);
-                     }
-
-                  }
-               }
-            }
-         }
-      }
-      
-      private void stop()
-      {
-         try { if (senderFactory != null) senderFactory.stop(); }
-         catch(Throwable th) 
-         {
-            logger.error("Stopping the sender factory " + SafeString.objectDescription(senderFactory) + " caused an exception:", th);
-         }
+         
+         return !messageFailed;
       }
    } // end ClusterRouter definition.
    
+   @SuppressWarnings("unchecked")
    protected void getMessages(Object message, List<Object> messages)
    {
       if(message instanceof Iterable)
       {
-         @SuppressWarnings("rawtypes")
          Iterator it = ((Iterable)message).iterator();
          while(it.hasNext())
             getMessages(it.next(), messages);
@@ -455,40 +374,4 @@ public class Router implements Dispatcher
          messages.add(message);
    }
     
-   /**
-    * This is protected for test access only. Otherwise it would be private.
-    */
-   protected Set<ClusterRouter> getRouter(Class<?> msgType)
-   {
-      Set<ClusterRouter> routers = routerMap.get(msgType);
-      if(routers == null)
-      {
-         if(missingMsgTypes.contains(msgType))
-            return null;
-         else 
-         {
-            synchronized(routerMap)
-            {
-               routers = routerMap.get(msgType);
-               if(routers == null)
-               {
-                  for(Class<?> c: routerMap.keySet())
-                  {
-                     if(c.isAssignableFrom(msgType))
-                     {
-                        routers = routerMap.get(c);
-                        routerMap.put(msgType, routers);
-                        break;
-                     }
-                  }
-                  if(routers == null)
-                     missingMsgTypes.put(msgType,new Object());
-               }
-            }
-         }
-      }
-      
-      return routers;
-   }
-
 }

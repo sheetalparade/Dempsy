@@ -22,29 +22,38 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.nokia.dempsy.DempsyException;
+import com.nokia.dempsy.config.ClusterId;
 import com.nokia.dempsy.internal.util.SafeString;
 import com.nokia.dempsy.messagetransport.Destination;
 import com.nokia.dempsy.mpcluster.MpCluster;
 import com.nokia.dempsy.mpcluster.MpClusterException;
 import com.nokia.dempsy.mpcluster.MpClusterSlot;
+import com.nokia.dempsy.mpcluster.MpClusterWatcher;
 
 /**
  * This Routing Strategy uses the {@link MpCluster} to negotiate with other instances in the 
  * cluster.
  */
-public class DefaultRoutingStrategy implements RoutingStrategy
+public class DefaultRoutingStrategy implements RoutingStrategy, MpClusterWatcher<ClusterInformation, SlotInformation>
 {
    private static Logger logger = LoggerFactory.getLogger(DefaultRoutingStrategy.class);
    
    private int defaultTotalSlots;
    private int defaultNumNodes;
+   
+   private Map<ClusterId, List<Inbound>> inboundsMap = null;
+   private Map<ClusterId, Outbound> outbounds = null;
+   
+   private Map<Class<?>, List<ClusterId>> messageTypeClustermap = new HashMap<Class<?>, List<ClusterId>>();
    
    public DefaultRoutingStrategy(int defaultTotalSlots, int defaultNumNodes)
    {
@@ -56,8 +65,13 @@ public class DefaultRoutingStrategy implements RoutingStrategy
    {
       private ConcurrentHashMap<Integer, DefaultRouterSlotInfo> destinations = new ConcurrentHashMap<Integer, DefaultRouterSlotInfo>();
       private int totalAddressCounts = -1;
+      private MpCluster<ClusterInformation, SlotInformation> cluster;
+      
+      public Outbound(MpCluster<ClusterInformation, SlotInformation> cluster)
+      {
+         this.cluster = cluster;
+      }
 
-      @Override
       public synchronized SlotInformation selectSlotForMessageKey(Object messageKey) throws DempsyException
       {
          if (totalAddressCounts < 0)
@@ -68,30 +82,47 @@ public class DefaultRoutingStrategy implements RoutingStrategy
          return destinations.get(calculatedModValue);
       }
       
-      public synchronized void resetCluster(MpCluster<ClusterInformation, SlotInformation> clusterHandle) throws MpClusterException
+      public ConcurrentHashMap<Integer, DefaultRouterSlotInfo> getDestinations(){ return this.destinations; }
+      
+      public synchronized void resetCluster() throws MpClusterException
       {
          if (logger.isTraceEnabled())
-            logger.trace("Resetting Outbound Strategy for cluster " + clusterHandle.getClusterId());
+            logger.trace("Resetting Outbound Strategy for cluster " + cluster.getClusterId());
          
          destinations.clear();
-         int newtotalAddressCounts = fillMapFromActiveSlots(destinations,clusterHandle);
+         int newtotalAddressCounts = fillMapFromActiveSlots(destinations, cluster);
          if (newtotalAddressCounts == 0)
-            throw new MpClusterException("The cluster " + clusterHandle.getClusterId() + 
+            throw new MpClusterException("The cluster " + cluster.getClusterId() + 
                   " seems to have invalid slot information. Someone has set the total number of slots to zero.");
          totalAddressCounts = newtotalAddressCounts > 0 ? newtotalAddressCounts : totalAddressCounts;
       }
+      
    } // end Outbound class definition
    
    private class Inbound implements RoutingStrategy.Inbound
    {
       private List<Integer> destinationsAcquired = new ArrayList<Integer>();
+      private Destination destination;
+      
+      private List<Class<?>> acceptedMessageTypes;
+      private MpCluster<ClusterInformation, SlotInformation> cluster;
+      
+      private AtomicBoolean stopping = new AtomicBoolean(false);
+      
+      public Inbound(MpCluster<ClusterInformation, SlotInformation> cluster, List<Class<?>> acceptedMessageTypes, Destination destination)
+      {
+         this.destination = destination;
+         this.cluster= cluster;
+         this.acceptedMessageTypes = acceptedMessageTypes;
+      }
 
-      @Override
-      public synchronized void resetCluster(MpCluster<ClusterInformation, SlotInformation> clusterHandle,
-            List<Class<?>> messagesTypes, Destination destination) throws MpClusterException
+      public synchronized void resetCluster() throws MpClusterException
       {
          if (logger.isTraceEnabled())
-            logger.trace("Resetting Inbound Strategy for cluster " + clusterHandle.getClusterId());
+            logger.trace("Resetting Inbound Strategy for cluster " + cluster.getClusterId());
+         
+         // Ignore reset if stopping
+         if(stopping.get()) { return; }
 
          int minNodeCount = defaultNumNodes;
          int totalAddressNeeded = defaultTotalSlots;
@@ -100,7 +131,7 @@ public class DefaultRoutingStrategy implements RoutingStrategy
          //==============================================================================
          // need to verify that the existing slots in destinationsAcquired are still ours
          Map<Integer,DefaultRouterSlotInfo> slotNumbersToSlots = new HashMap<Integer,DefaultRouterSlotInfo>();
-         fillMapFromActiveSlots(slotNumbersToSlots,clusterHandle);
+         fillMapFromActiveSlots(slotNumbersToSlots,cluster);
          Collection<Integer> slotsToReaquire = new ArrayList<Integer>();
          for (Integer destinationSlot : destinationsAcquired)
          {
@@ -116,22 +147,36 @@ public class DefaultRoutingStrategy implements RoutingStrategy
          for (Integer slotToReaquire : slotsToReaquire)
          {
             if (!acquireSlot(slotToReaquire, totalAddressNeeded,
-                  clusterHandle, messagesTypes, destination))
+                  cluster, acceptedMessageTypes, destination))
             {
                // in this case, see if I already own it...
-               logger.error("Cannot reaquire the slot " + slotToReaquire + " for the cluster " + clusterHandle.getClusterId());
+               logger.error("Cannot reaquire the slot " + slotToReaquire + " for the cluster " + cluster.getClusterId());
             }
          }
          //==============================================================================
 
-         while(needToGrabMoreSlots(clusterHandle,minNodeCount,totalAddressNeeded))
+         while(needToGrabMoreSlots(cluster,minNodeCount,totalAddressNeeded))
          {
             int randomValue = random.nextInt(totalAddressNeeded);
             if(destinationsAcquired.contains(randomValue))
                continue;
             if (acquireSlot(randomValue, totalAddressNeeded,
-                  clusterHandle, messagesTypes, destination))
+                  cluster, acceptedMessageTypes, destination))
                destinationsAcquired.add(randomValue);                  
+         }
+      }
+      
+      public void stop() throws MpClusterException
+      {
+         this.stopping.set(true);
+         Collection<MpClusterSlot<SlotInformation>> slots = cluster.getActiveSlots();
+         for(MpClusterSlot<SlotInformation> mpClusterSlot: slots)
+         {
+            Destination slotDestination = null;
+            if(mpClusterSlot != null && mpClusterSlot.getSlotInformation() != null)
+               slotDestination = mpClusterSlot.getSlotInformation().getDestination();
+            if(slotDestination == null || slotDestination.equals(destination))
+               mpClusterSlot.leave();
          }
       }
       
@@ -149,12 +194,102 @@ public class DefaultRoutingStrategy implements RoutingStrategy
          return destinationsAcquired.contains(messageKey.hashCode()%defaultTotalSlots);
       }
       
+      public Destination getDestination(){ return this.destination; }
+      
    } // end Inbound class definition
    
-   public RoutingStrategy.Inbound createInbound() { return new Inbound(); }
+   @Override
+   public RoutingStrategy.Inbound getInbound(
+         MpCluster<ClusterInformation, SlotInformation> cluster, List<Class<?>> acceptedMessageTypes, Destination destination) throws MpClusterException
+   { 
+      if(inboundsMap == null)
+      {
+         synchronized(this)
+         {
+            if(inboundsMap == null) 
+            { 
+               inboundsMap = new HashMap<ClusterId, List<Inbound>>();
+            }
+         }
+      }
+      Inbound inbound = null;
+      List<Inbound> inbounds = inboundsMap.get(cluster.getClusterId());
+      if(inbounds == null)
+      {
+         synchronized(inboundsMap)
+         {
+            inbounds = inboundsMap.get(cluster.getClusterId());
+            if(inbounds == null)
+            {
+               inbounds = new ArrayList<Inbound>();
+            }
+         }
+      }
+      boolean notFound = true;
+      for(Inbound in : inbounds)
+      {
+         if(destination.equals(in.getDestination())) { notFound = false; }
+      }
+      if(notFound)
+      {
+         inbound = new  Inbound(cluster, acceptedMessageTypes, destination);
+         inbounds.add(inbound);
+         inboundsMap.put(cluster.getClusterId(), inbounds);
+         cluster.addWatcher(this);
+      }
+      return inbound; 
+   }
    
-   public RoutingStrategy.Outbound createOutbound() { return new Outbound(); }
-   
+   @Override
+   public RoutingStrategy.Outbound getOutbound(MpCluster<ClusterInformation, SlotInformation> cluster) throws MpClusterException
+   {
+      if(outbounds == null)
+      {
+         synchronized(this)
+         {
+            if(outbounds == null) 
+            { 
+               outbounds = new HashMap<ClusterId, Outbound>();
+            }
+         }
+      }
+      Outbound outbound = outbounds.get(cluster.getClusterId());
+      if(outbound == null)
+      {
+         synchronized(outbounds)
+         {
+            outbound = outbounds.get(cluster.getClusterId());
+            if(outbound == null)
+            {
+               outbound = new  Outbound(cluster);
+               outbounds.put(cluster.getClusterId(), outbound);
+               cluster.addWatcher(this);
+            }
+         }
+      }
+      return outbound; 
+   }
+ 
+   @Override
+   public synchronized List<Destination> getDestinations(Object key, Object message) throws DempsyException
+   {
+      List<Destination> destinations = new ArrayList<Destination>();
+      List<ClusterId> clusters = messageTypeClustermap.get(message.getClass());
+      if(clusters != null)
+      {
+         for(ClusterId clusterId : clusters)
+         {
+            Outbound outbound = outbounds.get(clusterId);
+            if(outbound != null)
+            {
+               SlotInformation slotInformation = outbound.selectSlotForMessageKey(key);
+               if(slotInformation != null) { destinations.add(slotInformation.getDestination()); }
+            }
+         }
+      }
+      return destinations;
+   }
+
    static class DefaultRouterSlotInfo extends SlotInformation
    {
       private static final long serialVersionUID = 1L;
@@ -263,6 +398,93 @@ public class DefaultRoutingStrategy implements RoutingStrategy
          slot.setSlotInformation(dest);
       }
       return true;
+   }
+   
+   @Override
+   public synchronized void reset(MpCluster<ClusterInformation, SlotInformation> cluster)
+   {
+      if(inboundsMap != null)
+      {
+         List<Inbound> inbounds=null;
+         try
+         {
+            inbounds = inboundsMap.get(cluster.getClusterId());
+         }
+         catch(MpClusterException e)
+         {
+            logger.error("Error getting clusterId for "+SafeString.valueOf(cluster), e);
+         }
+         if(inbounds != null)
+            for(Inbound inbound: inbounds)
+            {
+               try
+               {
+                  inbound.resetCluster();
+               }
+               catch(MpClusterException e)
+               {
+                  logger.error("Error resetting inbound cluster "+SafeString.valueOf(cluster), e);
+               }
+            }
+      }
+      if(outbounds != null)
+      {
+         ClusterId clusterId = null;
+         try
+         {
+            clusterId = cluster.getClusterId();
+         }
+         catch(Exception e)
+         {
+            logger.error("Error getting clusterId for cluster "+SafeString.valueOf(cluster), e);
+            return;
+         }
+         Outbound outbound = outbounds.get(clusterId);
+         if(outbound != null) 
+         { 
+            try
+            {
+               outbound.resetCluster();
+            }
+            catch(MpClusterException e)
+            {
+               logger.error("Error resetting outbound cluster "+SafeString.valueOf(clusterId)+" with outbound "+SafeString.valueOf(outbound), e);
+            }
+            ConcurrentHashMap<Integer, DefaultRouterSlotInfo> destinations = outbound.getDestinations();
+            if(destinations != null && !destinations.isEmpty())
+            {
+               Set<Class<?>> acceptedMessageTypes = destinations.get(destinations.keys().nextElement()).getMessageClasses();
+               for(Class<?> messageType: acceptedMessageTypes)
+               {
+                  List<ClusterId> clusterIds = messageTypeClustermap.get(messageType);
+                  if(clusterIds == null) { clusterIds = new ArrayList<ClusterId>(); }
+                  if(!clusterIds.contains(clusterId))
+                     clusterIds.add(clusterId);
+                  messageTypeClustermap.put(messageType,clusterIds);
+               }
+            }
+
+         }
+      }
+   }
+
+   @Override
+   public void process(MpCluster<ClusterInformation, SlotInformation> cluster)
+   {
+      try
+      {
+         reset(cluster);
+      }
+      catch(Throwable e)
+      {
+         logger.error("Error resetting the cluster "+ SafeString.valueOf(cluster)+" while processing watcher "+SafeString.valueOfClass(this), e);
+      }
+   }
+   
+   @Override
+   public void stop(com.nokia.dempsy.router.RoutingStrategy.Inbound inbound) throws MpClusterException
+   {
+      inbound.stop();
    }
 
 }

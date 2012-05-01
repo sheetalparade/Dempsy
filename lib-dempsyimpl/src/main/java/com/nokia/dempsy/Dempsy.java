@@ -42,7 +42,6 @@ import com.nokia.dempsy.mpcluster.MpCluster;
 import com.nokia.dempsy.mpcluster.MpClusterException;
 import com.nokia.dempsy.mpcluster.MpClusterSession;
 import com.nokia.dempsy.mpcluster.MpClusterSessionFactory;
-import com.nokia.dempsy.mpcluster.MpClusterWatcher;
 import com.nokia.dempsy.router.ClusterInformation;
 import com.nokia.dempsy.router.CurrentClusterCheck;
 import com.nokia.dempsy.router.Router;
@@ -77,7 +76,7 @@ public class Dempsy
           * Currently a Node is instantiated within the Dempsy orchestrator as a one to one with the
           * {@link Cluster}.
           */
-         public class Node implements MpClusterWatcher<ClusterInformation,SlotInformation>
+         public class Node
          {
             protected ClusterDefinition clusterDefinition;
             
@@ -135,20 +134,21 @@ public class Dempsy
                   if (clusterDefinition.getOutputSchedule()!=null)
                      container.setOutPutPass(clusterDefinition.getOutputSchedule().getInterval(), clusterDefinition.getOutputSchedule().getTimeUnit());
 
-                  RoutingStrategy strategy = (RoutingStrategy)clusterDefinition.getRoutingStrategy();
+                  MpCluster<ClusterInformation, SlotInformation> currentClusterHandle = clusterSession.getCluster(currentClusterId);
                   
+                  RoutingStrategy strategy = (RoutingStrategy)clusterDefinition.getRoutingStrategy();
+
                   // there is only an inbound strategy if we have an Mp (that is, we aren't an adaptor) and
                   // we actually accept messages
                   if (messageProcessorPrototype != null && acceptedMessageClasses != null && acceptedMessageClasses.size() > 0)
-                     strategyInbound = strategy.createInbound();
-                  
-                  MpCluster<ClusterInformation, SlotInformation> currentClusterHandle = clusterSession.getCluster(currentClusterId);
+                  {
+                     strategyInbound = strategy.getInbound(currentClusterHandle, acceptedMessageClasses, receiver.getDestination());
+                     strategy.reset(currentClusterHandle);
+                  }
                   
                   // this can fail because of down cluster manager server ... but it should eventually recover.
                   try
                   {
-                     if (strategyInbound != null && receiver != null)
-                        strategyInbound.resetCluster(currentClusterHandle, acceptedMessageClasses, receiver.getDestination());
                      router.initialize();
                   }
                   catch (MpClusterException e)
@@ -204,17 +204,8 @@ public class Dempsy
                   // now we want to set the Node as the watcher.
                   if (strategyInbound != null && receiver != null)
                   {
-                     currentClusterHandle.addWatcher(this);
-                  
                      // and reset just in case something happened
-                     try
-                     {
-                        strategyInbound.resetCluster(currentClusterHandle, acceptedMessageClasses, receiver.getDestination());
-                     }
-                     catch (MpClusterException e)
-                     {
-                        logger.warn("Strategy failed to initialize. Continuing anyway. The cluster manager issue will be resolved automatically.",e);
-                     }
+                     strategy.reset(currentClusterHandle);
                   }
                }
                catch(RuntimeException e) { throw e; }
@@ -224,20 +215,6 @@ public class Dempsy
             public StatsCollector getStatsCollector() { return statsCollector; }
             
             public MpContainer getMpContainer() { return container; }
-
-            @Override
-            public void process(MpCluster<ClusterInformation, SlotInformation> cluster)
-            {
-               try
-               {
-                  if (strategyInbound != null)
-                     strategyInbound.resetCluster(cluster, acceptedMessageClasses, receiver.getDestination());
-               }
-               // TODO: fix these catches... .need to take note of a failure for a later retry
-               // using a scheduled task.
-               catch(RuntimeException e) { throw e; }
-               catch(Exception e) { throw new RuntimeException(e); }
-            }
             
             public void stop()
             {
@@ -255,10 +232,13 @@ public class Dempsy
                if (container != null)
                   try { container.shutdown(); container = null; } catch (Throwable th) { logger.error("Problem shutting down node for " + SafeString.valueOf(clusterDefinition), th); }
                
-               // the cluster session is stopped by the router.
-               if (router != null)
-                  try { router.stop(); router = null; } catch (Throwable th) { logger.error("Problem shutting down node for " + SafeString.valueOf(clusterDefinition), th); }
-               
+               if(strategyInbound != null)
+                  try { strategyInbound.stop(); strategyInbound = null; } catch (Throwable th) { logger.error("Problem shutting down node for " + SafeString.valueOf(clusterDefinition), th); }
+
+                     // the cluster session is stopped by the router.
+//               if (router != null)
+//                  try { router.stop(); router = null; } catch (Throwable th) { logger.error("Problem shutting down node for " + SafeString.valueOf(clusterDefinition), th); }
+                  
                if (statsCollector != null)
                   try { statsCollector.stop(); statsCollector = null;} catch (Throwable th) { logger.error("Problem shutting down node for " + SafeString.valueOf(clusterDefinition), th); }
 

@@ -34,8 +34,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import junit.framework.Assert;
 
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -82,16 +82,16 @@ public class TestDempsy
  
    private static InitZookeeperServerBean zkServer = null;
 
-   @BeforeClass
-   public static void setupZookeeperSystemVars() throws IOException
+   @Before
+   public void setupZookeeperSystemVars() throws IOException
    {
       System.setProperty("application", "test-app");
       System.setProperty("cluster", "test-cluster2");
       zkServer = new InitZookeeperServerBean();
    }
    
-   @AfterClass
-   public static void shutdownZookeeper()
+   @After
+   public void shutdownZookeeper()
    {
       zkServer.stop();
    }
@@ -238,6 +238,7 @@ public class TestDempsy
 
             if (! badCombos.contains(new ClusterId(clusterManager,transport)))
             {
+               ClassPathXmlApplicationContext actx = null;
                try
                {
                   logger.debug("*****************************************************************");
@@ -251,7 +252,7 @@ public class TestDempsy
                   ctx[3] = "testDempsy/" + applicationContext;
 
                   logger.debug("Starting up the appliction context ...");
-                  ClassPathXmlApplicationContext actx = new ClassPathXmlApplicationContext(ctx);
+                  actx = new ClassPathXmlApplicationContext(ctx);
                   actx.registerShutdownHook();
 
                   Dempsy dempsy = (Dempsy)actx.getBean("dempsy");
@@ -278,6 +279,14 @@ public class TestDempsy
                {
                   logger.error("***************** FAILED ON: " + clusterManager + ", " + transport);
                   throw re;
+               }
+               finally
+               {
+                  if(actx != null && actx.isActive())
+                  {
+                     actx.stop();
+                     actx.destroy();
+                  }
                }
                
                runCount++;
@@ -526,7 +535,7 @@ public class TestDempsy
                {
                   // start things and verify that the init method was called
                   Dempsy dempsy = (Dempsy)context.getBean("dempsy");
-                  TestMp mp = (TestMp) getMp(dempsy, "test-app","test-cluster1");
+                  TestMp mp = (TestMp) getMp(dempsy, "test-app","test-cluster-keystore-1");
                       
                   // verify we haven't called it again, not that there's really
                   // a way to given the code
@@ -559,7 +568,7 @@ public class TestDempsy
                         endTime > System.currentTimeMillis() && mp.cloneCalls.get()<3;)
                      Thread.sleep(1);
                   assertEquals(3, mp.cloneCalls.get());
-                  List<Node> nodes = dempsy.getCluster(new ClusterId("test-app","test-cluster1")).getNodes();
+                  List<Node> nodes = dempsy.getCluster(new ClusterId("test-app","test-cluster-keystore-1")).getNodes();
                   Assert.assertNotNull(nodes);
                   Assert.assertTrue(nodes.size()>0);
                   Node node = nodes.get(0);
