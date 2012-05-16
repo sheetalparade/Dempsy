@@ -323,15 +323,14 @@ public class Dempsy
          {
             if(clusterCheck.isThisNodePartOfCluster(clusterDef.getClusterId()))
             {
-               Cluster cluster = new Cluster(clusterDef);
-               appClusters.add(cluster);
+               clusterStarted = start(clusterDef, false);
             }
          }
          
-         List<Thread> toJoin = new ArrayList<Thread>(appClusters.size());
-         
-         for (Cluster cluster : appClusters)
-         {
+//         List<Thread> toJoin = new ArrayList<Thread>(appClusters.size());
+//         
+//         for (Cluster cluster : appClusters)
+//         {
 //            if (multiThreadedStart)
 //            {
 //               Thread t = new Thread(new ClusterStart(cluster),"Starting cluster:" + cluster.clusterDefinition);
@@ -341,44 +340,72 @@ public class Dempsy
 //            }
 //            else 
 //            {
-               cluster.start();
-               clusterStarted = true;
+//               cluster.start();
+//               clusterStarted = true;
 //            }
-         }
-         
-         for (Thread t : toJoin)
-         {
-            try { t.join(); } catch(InterruptedException e) { /* just continue */ }
-         }
+//         }
+//         
+//         for (Thread t : toJoin)
+//         {
+//            try { t.join(); } catch(InterruptedException e) { /* just continue */ }
+//         }
          
          if (failedStart != null)
             throw failedStart;
          
          for (Cluster cluster : appClusters)
          {
-            if (clusterCheck.isThisNodePartOfCluster(cluster.clusterDefinition.getClusterId()))
-            {
-               Adaptor adaptor = cluster.clusterDefinition.getAdaptor();
-               if (adaptor != null)
-               {
-                  AdaptorThread adaptorRunnable = new AdaptorThread(adaptor);
-                  Thread thread = new Thread(adaptorRunnable , "Adaptor - " + SafeString.objectDescription(adaptor) );
-                  adaptorThreads.add(adaptorRunnable);
-                  if (cluster.clusterDefinition.isAdaptorDaemon())
-                     thread.setDaemon(true);
-                  thread.start();
-                  clusterStarted = true;
-               }
-               else {
-                 OutputExecuter outputExecuter = (OutputExecuter) cluster.clusterDefinition.getOutputExecuter();
-                 if (outputExecuter != null) {
-                    outputExecuter.start();
-                 }
-              }
-            }
+            startAdaptor(cluster.clusterDefinition);
          }
          return clusterStarted;
       }
+      
+      public boolean start(ClusterDefinition clusterDefinition) throws DempsyException
+      {
+         return start(clusterDefinition, false);
+      }
+      
+      public boolean start(ClusterDefinition clusterDefinition, boolean startAdaptor) throws DempsyException
+      {
+         boolean clusterStarted = false;
+         if(clusterCheck.isThisNodePartOfCluster(clusterDefinition.getClusterId()))
+         {
+            Cluster cluster = new Cluster(clusterDefinition);
+            appClusters.add(cluster);
+            cluster.start();
+            clusterStarted = true;            
+         }
+         
+         if(startAdaptor) clusterStarted = startAdaptor(clusterDefinition);
+         
+         return clusterStarted;
+      }
+      
+      private boolean startAdaptor(ClusterDefinition clusterDefinition) throws DempsyException
+      {
+         if (clusterCheck.isThisNodePartOfCluster(clusterDefinition.getClusterId()))
+         {
+            Adaptor adaptor = clusterDefinition.getAdaptor();
+            if (adaptor != null)
+            {
+               AdaptorThread adaptorRunnable = new AdaptorThread(adaptor);
+               Thread thread = new Thread(adaptorRunnable , "Adaptor - " + SafeString.objectDescription(adaptor) );
+               adaptorThreads.add(adaptorRunnable);
+               if (clusterDefinition.isAdaptorDaemon())
+                  thread.setDaemon(true);
+               thread.start();
+               return true;
+            }
+            else {
+              OutputExecuter outputExecuter = (OutputExecuter) clusterDefinition.getOutputExecuter();
+              if (outputExecuter != null) {
+                 outputExecuter.start();
+              }
+           }
+         }
+         return false;
+      }
+      
       
       public void stop()
       {
