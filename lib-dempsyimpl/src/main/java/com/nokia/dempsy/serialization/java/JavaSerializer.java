@@ -22,11 +22,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.io.Serializable;
 
 import com.nokia.dempsy.serialization.SerializationException;
 import com.nokia.dempsy.serialization.Serializer;
 
-public class JavaSerializer<T> implements Serializer<T> {
+public class JavaSerializer<T> implements Serializer<T>, Serializable
+{
+   private static final long serialVersionUID = 1L;
 
    @Override
    public T deserialize(byte[] data) throws SerializationException 

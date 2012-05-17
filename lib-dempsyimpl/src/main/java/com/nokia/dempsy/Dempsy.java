@@ -99,8 +99,7 @@ public class Dempsy
                {
                   MpClusterSession<ClusterInformation, SlotInformation> clusterSession = clusterSessionFactory.createSession();
                   ClusterId currentClusterId = clusterDefinition.getClusterId();
-                  router = new Router(clusterDefinition.getParentApplicationDefinition());
-                  router.setCurrentCluster(currentClusterId);
+                  router = new Router(clusterDefinition);
                   router.setClusterSession(clusterSession);
                   router.setDefaultSenderFactory(transport.createOutbound());
                   
@@ -143,7 +142,7 @@ public class Dempsy
                   // there is only an inbound strategy if we have an Mp (that is, we aren't an adaptor) and
                   // we actually accept messages
                   if (messageProcessorPrototype != null && acceptedMessageClasses != null && acceptedMessageClasses.size() > 0)
-                     strategyInbound = strategy.createInbound(currentClusterHandle,acceptedMessageClasses, thisDestination);
+                     strategyInbound = strategy.createInbound(currentClusterHandle,acceptedMessageClasses, thisDestination, (Serializer<?>)clusterDefinition.getSerializer());
                   
                   // this can fail because of down cluster manager server ... but it should eventually recover.
                   try { router.initialize(); }

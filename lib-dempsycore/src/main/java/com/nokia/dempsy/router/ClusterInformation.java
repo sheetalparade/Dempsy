@@ -18,7 +18,12 @@ package com.nokia.dempsy.router;
 
 import java.io.Serializable;
 
-public class ClusterInformation implements Serializable
+import com.nokia.dempsy.serialization.Serializer;
+
+public interface ClusterInformation extends Serializable
 {
-   private static final long serialVersionUID = 1L;
+   
+   public Serializer<?> getSerializer();
+   
+   public RoutingStrategy getRoutingStrategy();
 }

@@ -16,6 +16,7 @@
 
 package com.nokia.dempsy.router;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -43,13 +44,16 @@ import com.nokia.dempsy.mpcluster.MpClusterException;
 import com.nokia.dempsy.mpcluster.MpClusterSlot;
 import com.nokia.dempsy.mpcluster.MpClusterWatcher;
 import com.nokia.dempsy.router.RoutingStrategy.Outbound.Coordinator;
+import com.nokia.dempsy.serialization.Serializer;
 
 /**
  * This Routing Strategy uses the {@link MpCluster} to negotiate with other instances in the 
  * cluster.
  */
-public class DefaultRoutingStrategy implements RoutingStrategy
+public class DefaultRoutingStrategy implements RoutingStrategy, Serializable
 {
+   private static final long serialVersionUID = 1L;
+
    private static final int resetDelay = 500;
    
    private static Logger logger = LoggerFactory.getLogger(DefaultRoutingStrategy.class);
@@ -209,16 +213,20 @@ public class DefaultRoutingStrategy implements RoutingStrategy
       private Collection<Class<?>> messageTypes;
       private Destination thisDestination;
       private ClusterId clusterId;
+      private RoutingStrategy routingStrategy;
+      private Serializer<?> serializer;
       
       private Inbound(MpCluster<ClusterInformation, SlotInformation> cluster, 
             Collection<Class<?>> messageTypes,
-            Destination thisDestination)
+            Destination thisDestination, RoutingStrategy routingStrategy, Serializer<?> serializer)
       {
          this.cluster = cluster;
          this.messageTypes = messageTypes;
          this.thisDestination = thisDestination;
          this.clusterId = cluster.getClusterId();
          this.cluster.addWatcher(this);
+         this.routingStrategy = routingStrategy;
+         this.serializer = serializer;
          process();
       }
 
@@ -254,7 +262,7 @@ public class DefaultRoutingStrategy implements RoutingStrategy
             for (Integer slotToReaquire : slotsToReaquire)
             {
                if (!acquireSlot(slotToReaquire, totalAddressNeeded,
-                     cluster, messageTypes, thisDestination))
+                     cluster, messageTypes, thisDestination, routingStrategy, serializer, defaultNumNodes))
                {
                   // in this case, see if I already own it...
                   logger.warn("Cannot reaquire the slot " + slotToReaquire + " for the cluster " + clusterId);
@@ -268,7 +276,7 @@ public class DefaultRoutingStrategy implements RoutingStrategy
                if(destinationsAcquired.contains(randomValue))
                   continue;
                if (acquireSlot(randomValue, totalAddressNeeded,
-                     cluster, messageTypes, thisDestination))
+                     cluster, messageTypes, thisDestination, routingStrategy, serializer, defaultNumNodes))
                   destinationsAcquired.add(randomValue);                  
             }
             
@@ -314,9 +322,10 @@ public class DefaultRoutingStrategy implements RoutingStrategy
    @Override
    public RoutingStrategy.Inbound createInbound(MpCluster<ClusterInformation, SlotInformation> cluster, 
          Collection<Class<?>> messageTypes,
-         Destination thisDestination)
+         Destination thisDestination,
+         Serializer<?> serializer)
    {
-      return new Inbound(cluster,messageTypes,thisDestination);
+      return new Inbound(cluster,messageTypes,thisDestination, this , serializer);
    }
 
    @Override
@@ -362,12 +371,14 @@ public class DefaultRoutingStrategy implements RoutingStrategy
       }
    }
    
-   static class DefaultRouterClusterInfo extends ClusterInformation
+   static class DefaultRouterClusterInfo implements ClusterInformation
    {
       private static final long serialVersionUID = 1L;
 
       private AtomicInteger minNodeCount = new AtomicInteger(5);
       private AtomicInteger totalSlotCount = new AtomicInteger(300);
+      private RoutingStrategy routingStrategy;
+      private Serializer<?> serializer;
       
       public DefaultRouterClusterInfo(int totalSlotCount, int nodeCount)
       {
@@ -380,6 +391,15 @@ public class DefaultRoutingStrategy implements RoutingStrategy
 
       public int getTotalSlotCount(){ return totalSlotCount.get();  }
       public void setTotalSlotCount(int addressMultiplier) { this.totalSlotCount.set(addressMultiplier); }
+      
+      @Override
+      public RoutingStrategy getRoutingStrategy(){ return this.routingStrategy; }
+      
+      @Override
+      public Serializer<?> getSerializer(){ return this.serializer; }
+      
+      public void setRoutingStrategy(RoutingStrategy routingStrategy) { this.routingStrategy = routingStrategy; }
+      public void setSerializer(Serializer<?> serializer){ this.serializer = serializer; }
    }
    
    /**
@@ -417,7 +437,8 @@ public class DefaultRoutingStrategy implements RoutingStrategy
    
    private static boolean acquireSlot(int slotNum, int totalAddressNeeded,
          MpCluster<ClusterInformation, SlotInformation> clusterHandle,
-         Collection<Class<?>> messagesTypes, Destination destination) throws MpClusterException
+         Collection<Class<?>> messagesTypes, Destination destination, RoutingStrategy routingStrategy,
+         Serializer<?> serializer, int defaultNodeCount) throws MpClusterException
    {
       MpClusterSlot<SlotInformation> slot = clusterHandle.join(String.valueOf(slotNum));
       if(slot == null)
@@ -431,6 +452,14 @@ public class DefaultRoutingStrategy implements RoutingStrategy
          dest.setTotalAddress(totalAddressNeeded);
          dest.setMessageClasses(messagesTypes);
          slot.setSlotInformation(dest);
+      }
+      ClusterInformation clusterInformation = clusterHandle.getClusterData();
+      if(clusterInformation == null)
+      {
+         DefaultRouterClusterInfo clusterInfo = new DefaultRouterClusterInfo(totalAddressNeeded, defaultNodeCount);
+         clusterInfo.setRoutingStrategy(routingStrategy);
+         clusterInfo.setSerializer(serializer);
+         clusterHandle.setClusterData(clusterInfo);
       }
       return true;
    }

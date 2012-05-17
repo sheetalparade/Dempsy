@@ -21,7 +21,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -34,9 +33,9 @@ import org.slf4j.LoggerFactory;
 
 import com.nokia.dempsy.Adaptor;
 import com.nokia.dempsy.Dempsy;
-import com.nokia.dempsy.Dempsy.Application.Cluster.Node;
 import com.nokia.dempsy.DempsyException;
 import com.nokia.dempsy.Dispatcher;
+import com.nokia.dempsy.Dempsy.Application.Cluster.Node;
 import com.nokia.dempsy.annotations.MessageKey;
 import com.nokia.dempsy.annotations.MessageProcessor;
 import com.nokia.dempsy.config.ApplicationDefinition;
@@ -51,6 +50,7 @@ import com.nokia.dempsy.messagetransport.Sender;
 import com.nokia.dempsy.messagetransport.SenderFactory;
 import com.nokia.dempsy.messagetransport.Transport;
 import com.nokia.dempsy.monitoring.StatsCollector;
+import com.nokia.dempsy.mpcluster.MpApplication;
 import com.nokia.dempsy.mpcluster.MpCluster;
 import com.nokia.dempsy.mpcluster.MpClusterException;
 import com.nokia.dempsy.mpcluster.MpClusterSession;
@@ -92,6 +92,7 @@ public class Router implements Dispatcher, RoutingStrategy.Outbound.Coordinator
 
    private AnnotatedMethodInvoker methodInvoker = new AnnotatedMethodInvoker(MessageKey.class);
    private ApplicationDefinition applicationDefinition = null;
+   private ClusterDefinition currentClusterDef = null;
 
    private ConcurrentHashMap<Class<?>, Set<ClusterRouter>> routerMap = new ConcurrentHashMap<Class<?>, Set<ClusterRouter>>();
    // protected for test access
@@ -101,28 +102,22 @@ public class Router implements Dispatcher, RoutingStrategy.Outbound.Coordinator
 
    private MpClusterSession<ClusterInformation, SlotInformation> mpClusterSession = null;
    private SenderFactory defaultSenderFactory;
-   private ClusterId currentCluster = null;
    private StatsCollector statsCollector = null;
    
    protected Set<Class<?>> stopTryingToSendTheseTypes = Collections.newSetFromMap(new ConcurrentHashMap<Class<?>, Boolean>());
    
-   public Router(ApplicationDefinition applicationDefinition) throws MpClusterException
+   public Router(ClusterDefinition clusterDefinition) throws MpClusterException
    {
-      if (applicationDefinition == null)
-         throw new IllegalArgumentException("Can't pass a null applicationDefinition to a " + SafeString.valueOfClass(this));
-      this.applicationDefinition = applicationDefinition;
+      if (clusterDefinition == null)
+         throw new IllegalArgumentException("Can't pass a null clusterDefinition to a " + SafeString.valueOfClass(this));
+      this.currentClusterDef = clusterDefinition;
+      this.applicationDefinition = clusterDefinition.getParentApplicationDefinition();
    }
 
    /**
     * Provide the handle to the cluster factory so that each visible cluster can be reached.
     */
    public void setClusterSession(MpClusterSession<ClusterInformation, SlotInformation> factory) { mpClusterSession = factory; }
-   
-   /**
-    * Tell the {@link Router} what the current cluster is. This is typically determined by
-    * the {@link Dempsy} orchestrator through the use of the {@link CurrentClusterCheck}.
-    */
-   public void setCurrentCluster(ClusterId currentClusterId) { this.currentCluster = new ClusterId(currentClusterId); }
    
    /**
     * This sets the default {@link Transport} to use for each cluster a message may be routed to.
@@ -139,24 +134,6 @@ public class Router implements Dispatcher, RoutingStrategy.Outbound.Coordinator
     */
    public void initialize() throws MpClusterException, DempsyException
    {
-      // applicationDefinition cannot be null because the constructor checks
-      
-      // put all of the cluster definitions into a map for easy lookup
-      Map<ClusterId, ClusterDefinition> defs = new HashMap<ClusterId, ClusterDefinition>();
-      for (ClusterDefinition clusterDef : applicationDefinition.getClusterDefinitions())
-         defs.put(clusterDef.getClusterId(), clusterDef);
-      
-      // now see about the one that we are.
-      ClusterDefinition currentClusterDef = null;
-      if (currentCluster != null)
-      {
-         currentClusterDef = defs.get(currentCluster);
-         if (currentClusterDef == null)
-            throw new DempsyException("This Dempsy instance seems to be misconfigured. While this VM thinks it's an instance of " +
-                  currentCluster + " the application it's configured with doesn't contain this cluster definition. The application configuration consists of: " +
-                  applicationDefinition);
-      }
-
       // get the set of explicit destinations if they exist
       Set<ClusterId> explicitClusterDestinations = 
             (currentClusterDef != null && currentClusterDef.hasExplicitDestinations()) ? new HashSet<ClusterId>() : null;
@@ -169,21 +146,26 @@ public class Router implements Dispatcher, RoutingStrategy.Outbound.Coordinator
       //-------------------------------------------------------------------------------------
       // if the currentCluster is set and THAT cluster has explicit destinations
       //  then those are the only ones we want to consider
-      for (ClusterDefinition clusterDef : applicationDefinition.getClusterDefinitions())
+      
+      MpApplication<ClusterInformation, SlotInformation> application = mpClusterSession.getApplication(applicationDefinition.getApplicationName());
+      
+      for(MpCluster<ClusterInformation, SlotInformation> cluster: application.getActiveClusters())
       {
-         if (explicitClusterDestinations == null || explicitClusterDestinations.contains(clusterDef.getClusterId()))
+         if (explicitClusterDestinations == null || explicitClusterDestinations.contains(cluster.getClusterId()))
          {
-            RoutingStrategy strategy = (RoutingStrategy)clusterDef.getRoutingStrategy();
-            ClusterId clusterId = clusterDef.getClusterId();
-            if (strategy == null)
-               throw new DempsyException("Could not retrieve the routing strategy for " + SafeString.valueOf(clusterId));
-            
-            MpCluster<ClusterInformation, SlotInformation> cluster = mpClusterSession.getCluster(clusterId);
-
-            // This create will result in a callback on the Router as the Outbound.Coordinator with a 
-            // registration event. The Outbound may (will) call back on the Router to retrieve the 
-            // MpClusterSession and register itself with the appropriate cluster.
-            outbounds.add(strategy.createOutbound(this, cluster));
+            ClusterInformation clusterInformation = cluster.getClusterData();
+            if(clusterInformation != null)
+            {
+               RoutingStrategy strategy = clusterInformation.getRoutingStrategy();
+               ClusterId clusterId = cluster.getClusterId();
+               if (strategy == null)
+                  throw new DempsyException("Could not retrieve the routing strategy for " + SafeString.valueOf(clusterId));
+               
+               // This create will result in a callback on the Router as the Outbound.Coordinator with a 
+               // registration event. The Outbound may (will) call back on the Router to retrieve the 
+               // MpClusterSession and register itself with the appropriate cluster.
+               outbounds.add(strategy.createOutbound(this, cluster));
+            }
          }
       }
       //-------------------------------------------------------------------------------------
@@ -424,10 +406,9 @@ public class Router implements Dispatcher, RoutingStrategy.Outbound.Coordinator
    
    protected void getMessages(Object message, List<Object> messages)
    {
-      if(message instanceof Iterable)
+      if(message instanceof Iterable<?>)
       {
-         @SuppressWarnings("rawtypes")
-         Iterator it = ((Iterable)message).iterator();
+         Iterator<?> it = ((Iterable<?>)message).iterator();
          while(it.hasNext())
             getMessages(it.next(), messages);
       }

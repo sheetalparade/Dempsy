@@ -38,6 +38,7 @@ import com.nokia.dempsy.mpcluster.MpClusterSession;
 import com.nokia.dempsy.mpcluster.MpClusterSessionFactory;
 import com.nokia.dempsy.mpcluster.invm.LocalVmMpClusterSessionFactory;
 import com.nokia.dempsy.router.Router.ClusterRouter;
+import com.nokia.dempsy.serialization.Serializer;
 import com.nokia.dempsy.serialization.java.JavaSerializer;
 
 public class TestRouterClusterManagement
@@ -72,9 +73,9 @@ public class TestRouterClusterManagement
       // fake the inbound side setup
       inbound = strategy.createInbound(session.getCluster(clusterId), 
             new Dempsy(){ public List<Class<?>> gm(ClusterDefinition clusterDef) { return super.getAcceptedMessages(clusterDef); }}.gm(cd), 
-         destination);
+         destination, (Serializer<?>)app.getSerializer());
       
-      routerFactory = new Router(app);
+      routerFactory = new Router(cd);
       routerFactory.setClusterSession(session);
       routerFactory.initialize();
    }

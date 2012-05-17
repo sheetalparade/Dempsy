@@ -27,6 +27,7 @@ import com.nokia.dempsy.config.ClusterId;
 import com.nokia.dempsy.messagetransport.Destination;
 import com.nokia.dempsy.mpcluster.MpCluster;
 import com.nokia.dempsy.router.RoutingStrategy.Outbound.Coordinator;
+import com.nokia.dempsy.serialization.Serializer;
 
 /**
  * <p>A {@link RoutingStrategy} is responsible for determining how to find the appropriate
@@ -161,7 +162,10 @@ public interface RoutingStrategy
     * with 'this' node.
     * @return the {@link Inbound} instance.
     */
-   public Inbound createInbound(MpCluster<ClusterInformation, SlotInformation> cluster, Collection<Class<?>> messageTypes, Destination thisDestination);
+   public Inbound createInbound(MpCluster<ClusterInformation, SlotInformation> cluster, 
+         Collection<Class<?>> messageTypes, 
+         Destination thisDestination,
+         Serializer<?> serializer);
    
    /**
     * The RoutingStrategy needs to create an {@link Outbound} that corresponds to the given cluster. It should do this
