@@ -33,6 +33,7 @@ import com.nokia.dempsy.internal.util.SafeString;
 import com.nokia.dempsy.mpcluster.MpApplication;
 import com.nokia.dempsy.mpcluster.MpCluster;
 import com.nokia.dempsy.mpcluster.MpClusterException;
+import com.nokia.dempsy.mpcluster.MpClusterNode;
 import com.nokia.dempsy.mpcluster.MpClusterSession;
 import com.nokia.dempsy.mpcluster.MpClusterSessionFactory;
 import com.nokia.dempsy.mpcluster.MpClusterSlot;
@@ -206,7 +207,7 @@ public class LocalVmMpClusterSessionFactory<T,N> implements MpClusterSessionFact
 
 
          @Override
-         public MpClusterSlot<N> join(String slotName) throws MpClusterException
+         public MpClusterSlot<N> allocateSlot(String slotName) throws MpClusterException
          {
             // This can't return null due to the constructor
             ConcurrentHashMap<String, MpClusterSlot<N>> sdmap = nodes.get(clusterId);
@@ -235,6 +236,13 @@ public class LocalVmMpClusterSessionFactory<T,N> implements MpClusterSessionFact
                ref = newref;
             ref.set(data);
             callUpdateWatchersForCluster(clusterId);
+         }
+
+         @Override
+         public Collection<MpClusterNode<N>> getActiveNodes() throws MpClusterException
+         {
+            // TODO Auto-generated method stub
+            return null;
          }
          
       } // end cluster definition

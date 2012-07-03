@@ -143,7 +143,7 @@ public class Dempsy
                   // there is only an inbound strategy if we have an Mp (that is, we aren't an adaptor) and
                   // we actually accept messages
                   if (messageProcessorPrototype != null && acceptedMessageClasses != null && acceptedMessageClasses.size() > 0)
-                     strategyInbound = strategy.createInbound(currentClusterHandle,acceptedMessageClasses, thisDestination);
+                     strategyInbound = strategy.createInbound(currentClusterHandle,acceptedMessageClasses, thisDestination, serializer);
                   
                   // this can fail because of down cluster manager server ... but it should eventually recover.
                   try { router.initialize(); }

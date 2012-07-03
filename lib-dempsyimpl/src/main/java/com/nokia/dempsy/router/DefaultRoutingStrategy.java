@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -40,9 +41,11 @@ import com.nokia.dempsy.internal.util.SafeString;
 import com.nokia.dempsy.messagetransport.Destination;
 import com.nokia.dempsy.mpcluster.MpCluster;
 import com.nokia.dempsy.mpcluster.MpClusterException;
+import com.nokia.dempsy.mpcluster.MpClusterNode;
 import com.nokia.dempsy.mpcluster.MpClusterSlot;
 import com.nokia.dempsy.mpcluster.MpClusterWatcher;
 import com.nokia.dempsy.router.RoutingStrategy.Outbound.Coordinator;
+import com.nokia.dempsy.serialization.Serializer;
 
 /**
  * This Routing Strategy uses the {@link MpCluster} to negotiate with other instances in the 
@@ -209,21 +212,98 @@ public class DefaultRoutingStrategy implements RoutingStrategy
       private Collection<Class<?>> messageTypes;
       private Destination thisDestination;
       private ClusterId clusterId;
+      private ClusterInformation clusterInformation;
+      private MpClusterNode<SlotInformation> clusterNode;
+      private SlotInformation slotInformation;
+      private CopyOnWriteArrayList<SlotInformation> slots = new CopyOnWriteArrayList<SlotInformation>();
       
       private Inbound(MpCluster<ClusterInformation, SlotInformation> cluster, 
             Collection<Class<?>> messageTypes,
-            Destination thisDestination)
+            Destination thisDestination, ClusterInformation clusterInformation)
       {
          this.cluster = cluster;
          this.messageTypes = messageTypes;
          this.thisDestination = thisDestination;
          this.clusterId = cluster.getClusterId();
          this.cluster.addWatcher(this);
+         this.clusterInformation = clusterInformation;
          process();
       }
 
       @Override
-      public synchronized void process()
+      public void process()
+      {
+         boolean retry = true;
+         try
+         {
+            if (logger.isTraceEnabled())
+               logger.trace("Resetting Inbound Strategy for cluster " + clusterId);
+            
+            ClusterInformation clusterInfo = cluster.getClusterData();
+            if(clusterInfo == null || !clusterInfo.equals(clusterInformation))
+            {
+               cluster.setClusterData(clusterInformation);
+            }
+            if(clusterNode == null) clusterNode = cluster.join(thisDestination.toString());
+
+            SlotInformation slotInfo = clusterNode.getNodeInformation();
+            if(slotInfo == null || !slotInfo.equals(this.slotInformation))
+            {
+               slotInformation = new DefaultRouterSlotInfo();
+               slotInformation.setDestination(this.thisDestination);
+               slotInformation.setMessageClasses(this.messageTypes);
+               clusterNode.setNodeInformation(slotInformation);
+            }
+            
+            Collection<MpClusterSlot<SlotInformation>> allSlots = cluster.getActiveSlots();
+            if(allSlots != null)
+            {
+               this.slots.clear();
+               this.destinationsAcquired.clear();
+               for(MpClusterSlot<SlotInformation> mpClusterSlot: allSlots)
+               {
+                  DefaultRouterSlotInfo s = (DefaultRouterSlotInfo) mpClusterSlot.getSlotInformation();
+                  int slotNum =-1;
+                  String slotNumStr=mpClusterSlot.getSlotName();
+                  try
+                  {
+                     slotNum = Integer.parseInt(slotNumStr);
+                  }
+                  catch(NumberFormatException e)
+                  {
+                     throw new MpClusterException("Error reading slot name. Expected number, got \""+slotNumStr);
+                  }
+                  if(s.getDestination() != null && s.getDestination().equals(this.thisDestination))
+                  {
+                     this.destinationsAcquired.add(slotNum);
+                  }
+                  s.setSlotIndex(slotNum);
+                  this.slots.addIfAbsent(s);
+               }
+            }
+            retry = false;
+         }
+         catch(MpClusterException e)
+         {
+            logger.error("Error joining in cluster "+ SafeString.valueOf(clusterId) + "with clusterInformation "+SafeString.valueOf(clusterInformation), e);
+            this.destinationsAcquired.clear();
+            this.slots.clear();
+         }
+         finally
+         {
+            // if we never got the destinations set up then kick off a retry
+            if (retry)
+               scheduler.schedule(new Runnable(){
+                  @Override
+                  public void run() { process(); }
+               }, resetDelay, TimeUnit.MILLISECONDS);
+         }
+
+         
+      }
+      
+      @SuppressWarnings("unused")
+      public synchronized void process_old()
       {
          boolean retry = true;
          try
@@ -293,6 +373,14 @@ public class DefaultRoutingStrategy implements RoutingStrategy
       public void stop()
       {
          scheduler.shutdown();
+         try
+         {
+            if(clusterNode != null) clusterNode.leave();
+         }
+         catch(MpClusterException e)
+         {
+            logger.error("Error leaving cluster node "+ SafeString.valueOf(clusterId), e);
+         }
       }
       
       private boolean needToGrabMoreSlots(MpCluster<ClusterInformation, SlotInformation> clusterHandle,
@@ -314,9 +402,10 @@ public class DefaultRoutingStrategy implements RoutingStrategy
    @Override
    public RoutingStrategy.Inbound createInbound(MpCluster<ClusterInformation, SlotInformation> cluster, 
          Collection<Class<?>> messageTypes,
-         Destination thisDestination)
+         Destination thisDestination, Serializer<?> serializer)
    {
-      return new Inbound(cluster,messageTypes,thisDestination);
+      return new Inbound(cluster,messageTypes,thisDestination, 
+            new DefaultRouterClusterInfo(this.defaultTotalSlots, this.defaultNumNodes, serializer, this));
    }
 
    @Override
@@ -368,11 +457,15 @@ public class DefaultRoutingStrategy implements RoutingStrategy
 
       private AtomicInteger minNodeCount = new AtomicInteger(5);
       private AtomicInteger totalSlotCount = new AtomicInteger(300);
+      private Serializer<?> serializer;
+      private RoutingStrategy routingStrategy;
       
-      public DefaultRouterClusterInfo(int totalSlotCount, int nodeCount)
+      public DefaultRouterClusterInfo(int totalSlotCount, int nodeCount, Serializer<?> serializer, RoutingStrategy routingStrategy)
       {
          this.totalSlotCount.set(totalSlotCount);
          this.minNodeCount.set(nodeCount);
+         this.serializer = serializer;
+         this.routingStrategy = routingStrategy;
       }
 
       public int getMinNodeCount() { return minNodeCount.get(); }
@@ -380,6 +473,12 @@ public class DefaultRoutingStrategy implements RoutingStrategy
 
       public int getTotalSlotCount(){ return totalSlotCount.get();  }
       public void setTotalSlotCount(int addressMultiplier) { this.totalSlotCount.set(addressMultiplier); }
+      
+      public Serializer<?> getSerializer(){ return this.serializer; }
+      public void setSerializer(Serializer<?> serializer){ this.serializer = serializer; }
+      
+      public RoutingStrategy getRoutingStrategy(){ return this.routingStrategy; }
+      public void setRoutingStrategy(RoutingStrategy routingStrategy){ this.routingStrategy = routingStrategy; }
    }
    
    /**
@@ -419,7 +518,7 @@ public class DefaultRoutingStrategy implements RoutingStrategy
          MpCluster<ClusterInformation, SlotInformation> clusterHandle,
          Collection<Class<?>> messagesTypes, Destination destination) throws MpClusterException
    {
-      MpClusterSlot<SlotInformation> slot = clusterHandle.join(String.valueOf(slotNum));
+      MpClusterSlot<SlotInformation> slot = clusterHandle.allocateSlot(String.valueOf(slotNum));
       if(slot == null)
          return false;
       DefaultRouterSlotInfo dest = (DefaultRouterSlotInfo)slot.getSlotInformation();

@@ -19,6 +19,7 @@ package com.nokia.dempsy.mpcluster;
 import java.util.Collection;
 
 import com.nokia.dempsy.config.ClusterId;
+import com.nokia.dempsy.router.SlotInformation;
 
 /**
  * <p>This interface represents a means of accessing the current state of a cluster.</p>
@@ -59,17 +60,40 @@ public interface MpCluster<T, N>
     * existing node needs to be handled by the user.</p>
     */
    public Collection<MpClusterSlot<N>> getActiveSlots() throws MpClusterException;
-   
+
    /**
-    * Join the cluster creating a 'slot' out of this instance of the MpCluster implementation.
+    * <p>This will retrieve all of the current nodes in a cluster. The collection returned contains 
+    * accessors for the state information stored for each node.</p>
     * 
-    * @return the MpClusterSlot associated with the join instance's state. 
-    * Null if no slot was acquired. 
+    * <p>The caller shouldn't hold onto the list as it is not updated as the state
+    * of the cluster changes. It is possible that the state can change between
+    * the time this call is made and the time a MpClusterNode is used, so that time
+    * should be kept short and access through a MpClusterNode to a no-longer 
+    * existing node needs to be handled by the user.</p>
+    */
+   public Collection<MpClusterNode<N>> getActiveNodes() throws MpClusterException;
+
+   /**
+    * Join the cluster creating a 'node' out of this instance of the MpCluster implementation.
+    * 
+    * @return the MpClusternode associated with the join instance's state. 
+    * Null if cannot join. 
     * 
     * @exception MpClusterException
     */
-   public MpClusterSlot<N> join(String slotName) throws MpClusterException;
+   public MpClusterNode<N> join(String nodeName) throws MpClusterException;
    
+   /**
+    * Create a slot for the cluster. 
+    * {@link MpClusterSlot} is expected to have necessary {@link SlotInformation}
+    * 
+    * @return the MpClusterSlot associated with the this cluster instance. 
+    * Null if cannot join. 
+    * 
+    * @exception MpClusterException
+    */
+   public MpClusterSlot<N> allocateSlot(String slotName) throws MpClusterException;
+
    /**
     * Every MpCluster instance participating in a cluster will have the 
     * same cluster Id, which identifies the total set of Mps of the same prototype.

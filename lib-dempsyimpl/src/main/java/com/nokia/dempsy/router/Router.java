@@ -34,9 +34,9 @@ import org.slf4j.LoggerFactory;
 
 import com.nokia.dempsy.Adaptor;
 import com.nokia.dempsy.Dempsy;
-import com.nokia.dempsy.Dempsy.Application.Cluster.Node;
 import com.nokia.dempsy.DempsyException;
 import com.nokia.dempsy.Dispatcher;
+import com.nokia.dempsy.Dempsy.Application.Cluster.Node;
 import com.nokia.dempsy.annotations.MessageKey;
 import com.nokia.dempsy.annotations.MessageProcessor;
 import com.nokia.dempsy.config.ApplicationDefinition;
@@ -51,9 +51,11 @@ import com.nokia.dempsy.messagetransport.Sender;
 import com.nokia.dempsy.messagetransport.SenderFactory;
 import com.nokia.dempsy.messagetransport.Transport;
 import com.nokia.dempsy.monitoring.StatsCollector;
+import com.nokia.dempsy.mpcluster.MpApplication;
 import com.nokia.dempsy.mpcluster.MpCluster;
 import com.nokia.dempsy.mpcluster.MpClusterException;
 import com.nokia.dempsy.mpcluster.MpClusterSession;
+import com.nokia.dempsy.mpcluster.MpClusterWatcher;
 import com.nokia.dempsy.router.RoutingStrategy.Outbound;
 import com.nokia.dempsy.serialization.SerializationException;
 import com.nokia.dempsy.serialization.Serializer;
@@ -183,6 +185,37 @@ public class Router implements Dispatcher, RoutingStrategy.Outbound.Coordinator
             // This create will result in a callback on the Router as the Outbound.Coordinator with a 
             // registration event. The Outbound may (will) call back on the Router to retrieve the 
             // MpClusterSession and register itself with the appropriate cluster.
+            final MpApplication<ClusterInformation, SlotInformation> app = mpClusterSession.getApplication(clusterId.getApplicationName());
+            final ClusterId final_clusterId = clusterId;
+            final Router r = this;
+            final MpCluster<ClusterInformation, SlotInformation> c = cluster;
+            app.addWatcher(new MpClusterWatcher()
+            {
+               
+               @Override
+               public void process()
+               {
+                  try
+                  {
+                     Collection<MpCluster<ClusterInformation, SlotInformation>> clusters = app.getActiveClusters();
+                     if(clusters != null)
+                     {
+                        for(MpCluster<ClusterInformation, SlotInformation> mpCluster1:clusters)
+                        {
+                           ClusterInformation info = mpCluster1.getClusterData();
+                           if(info!=null)
+                           {
+                              outbounds.add(info.getRoutingStrategy().createOutbound(r, c));
+                           }
+                        }
+                     }
+                  }
+                  catch(MpClusterException e)
+                  {
+                     logger.error("Error reading list of active clusters for "+SafeString.valueOf(final_clusterId), e);
+                  }
+               }
+            });
             outbounds.add(strategy.createOutbound(this, cluster));
          }
       }
@@ -424,10 +457,9 @@ public class Router implements Dispatcher, RoutingStrategy.Outbound.Coordinator
    
    protected void getMessages(Object message, List<Object> messages)
    {
-      if(message instanceof Iterable)
+      if(message instanceof Iterable<?>)
       {
-         @SuppressWarnings("rawtypes")
-         Iterator it = ((Iterable)message).iterator();
+         Iterator<?> it = ((Iterable<?>)message).iterator();
          while(it.hasNext())
             getMessages(it.next(), messages);
       }
