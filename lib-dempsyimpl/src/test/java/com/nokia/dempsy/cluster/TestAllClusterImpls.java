@@ -14,15 +14,14 @@
  * limitations under the License.
  */
 
-package com.nokia.dempsy.mpcluster;
+package com.nokia.dempsy.cluster;
 
+import static com.nokia.dempsy.TestUtils.poll;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static com.nokia.dempsy.TestUtils.*;
-
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -31,28 +30,27 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import junit.framework.Assert;
-
 import org.junit.AfterClass;
+import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.springframework.context.support.ClassPathXmlApplicationContext;
 
+import com.nokia.dempsy.TestUtils.Condition;
 import com.nokia.dempsy.config.ClusterId;
 import com.nokia.dempsy.mpcluster.zookeeper.ZookeeperTestServer.InitZookeeperServerBean;
 
-public class TestAllMpClusterImpls
+public class TestAllClusterImpls
 {
-   String[] clusterManagers = new String[]{ "testDempsy/ClusterManager-ZookeeperActx.xml", "testDempsy/ClusterManager-LocalVmActx.xml" };
-//   String[] clusterManagers = new String[]{ "testDempsy/ClusterManager-ZookeeperActx.xml" };
-//   String[] clusterManagers = new String[]{ "testDempsy/ClusterManager-LocalVmActx.xml" };
+//   String[] clusterManagers = new String[]{ "testDempsy/ClusterInfo-LocalActx.xml", "testDempsy/ClusterInfo-ZookeeperActx.xml" };
+//   String[] clusterManagers = new String[]{ "testDempsy/ClusterInfo-LocalActx.xml" };
+   String[] clusterManagers = new String[]{ "testDempsy/ClusterInfo-ZookeeperActx.xml" };
    
-   @SuppressWarnings("rawtypes")
-   private List<MpClusterSession> sessionsToClose = new ArrayList<MpClusterSession>();
+   private List<ClusterInfoSession> sessionsToClose = new ArrayList<ClusterInfoSession>();
 
    public void cleanup()
    {
-      for(@SuppressWarnings("rawtypes") MpClusterSession session : sessionsToClose)
+      for(ClusterInfoSession session : sessionsToClose)
          session.stop();
       sessionsToClose.clear();
    }
@@ -71,20 +69,19 @@ public class TestAllMpClusterImpls
       zkServer.stop();
    }
    
-   private static interface Checker<T,N>
+   private static interface Checker
    {
-      public void check(String pass, MpClusterSessionFactory<T,N> factory) throws Throwable;
+      public void check(String pass, ClusterInfoSessionFactory factory) throws Throwable;
    }
    
-   private <T,N> void runAllCombinations(Checker<T,N> checker) throws Throwable
+   private <T,N> void runAllCombinations(Checker checker) throws Throwable
    {
       for (String clusterManager : clusterManagers)
       {
          ClassPathXmlApplicationContext actx = new ClassPathXmlApplicationContext(clusterManager);
          actx.registerShutdownHook();
 
-         @SuppressWarnings("unchecked")
-         MpClusterSessionFactory<T, N> factory = (MpClusterSessionFactory<T, N>)actx.getBean("clusterSessionFactory");
+         ClusterInfoSessionFactory factory = (ClusterInfoSessionFactory)actx.getBean("clusterSessionFactory");
 
          if (checker != null)
             checker.check("pass for:" + clusterManager,factory);
@@ -94,28 +91,52 @@ public class TestAllMpClusterImpls
       }
    }
    
+   private static ClusterInfoLeaf<String> createApplicationLevel(ClusterId cid, ClusterInfoSession session) throws ClusterInfoException
+   {
+      ClusterInfoLeaf<?> root = session.getRoot();
+      @SuppressWarnings("unchecked")
+      ClusterInfoLeaf<String> appHandle = (ClusterInfoLeaf<String>)root.createNewChild(cid.getApplicationName(), false);
+      return appHandle;
+   }
+   
+   private static ClusterInfoLeaf<String> createClusterLevel(ClusterId cid, ClusterInfoSession session) throws ClusterInfoException
+   {
+      ClusterInfoLeaf<String> appHandle = createApplicationLevel(cid,session);
+      
+      @SuppressWarnings("unchecked")
+      ClusterInfoLeaf<String> clusterHandle = (ClusterInfoLeaf<String>)appHandle.createNewChild(cid.getMpClusterName(), false);
+      return clusterHandle;
+   }
+   
+   @SuppressWarnings("unchecked")
+   private static ClusterInfoLeaf<String> getClusterLeaf(ClusterId cid, ClusterInfoSession session) throws ClusterInfoException
+   {
+      return (ClusterInfoLeaf<String>) session.getRoot().getSubLeaf(cid.getApplicationName()).getSubLeaf(cid.getMpClusterName());
+   }
+   
    @Test
    public void testMpClusterFromFactory() throws Throwable
    {
-      runAllCombinations(new Checker<String,String>()
+      runAllCombinations(new Checker()
       {
          @Override
-         public void check(String pass, MpClusterSessionFactory<String,String> factory) throws Throwable
+         public void check(String pass, ClusterInfoSessionFactory factory) throws Throwable
          {
             ClusterId cid = new ClusterId("test-app1","test-cluster");
             
-            MpClusterSession<String, String> session = factory.createSession();
+            ClusterInfoSession session = factory.createSession();
             assertNotNull(pass,session);
             sessionsToClose.add(session);
-            MpCluster<String, String> clusterHandle = session.getCluster(cid);
+            ClusterInfoLeaf<String> clusterHandle = createClusterLevel(cid, session);
+            
             assertNotNull(pass,clusterHandle);
             
             // there should be nothing currently registered
-            Collection<MpClusterSlot<String>> slots = clusterHandle.getActiveSlots();
+            Collection<ClusterInfoLeaf<?>> slots = clusterHandle.getSubLeaves();
             assertNotNull(pass,slots);
             assertEquals(pass,0,slots.size());
             
-            assertNull(pass,clusterHandle.getClusterData());
+            assertNull(pass,clusterHandle.getData());
             
             session.stop();
          }
@@ -126,26 +147,25 @@ public class TestAllMpClusterImpls
    @Test
    public void testSimpleClusterLevelData() throws Throwable
    {
-      runAllCombinations(new Checker<String,String>()
+      runAllCombinations(new Checker()
       {
          @Override
-         public void check(String pass, MpClusterSessionFactory<String,String> factory) throws Throwable
+         public void check(String pass, ClusterInfoSessionFactory factory) throws Throwable
          {
             ClusterId cid = new ClusterId("test-app2","test-cluster");
             
-            MpClusterSession<String, String> session = factory.createSession();
+            ClusterInfoSession session = factory.createSession();
             assertNotNull(pass,session);
             sessionsToClose.add(session);
-            MpCluster<String, String> clusterHandle = session.getCluster(cid);
+            ClusterInfoLeaf<String> clusterHandle = createClusterLevel(cid,session);
             assertNotNull(pass,clusterHandle);
 
             String data = "HelloThere";
-            clusterHandle.setClusterData(data);
-            String cdata = clusterHandle.getClusterData();
+            clusterHandle.setData(data);
+            String cdata = clusterHandle.getData();
             assertEquals(pass,data,cdata);
             
             session.stop();
-
          }
          
       });
@@ -154,27 +174,28 @@ public class TestAllMpClusterImpls
    @Test
    public void testSimpleClusterLevelDataThroughApplication() throws Throwable
    {
-      runAllCombinations(new Checker<String,String>()
+      runAllCombinations(new Checker()
       {
          @Override
-         public void check(String pass, MpClusterSessionFactory<String,String> factory) throws Throwable
+         public void check(String pass, ClusterInfoSessionFactory factory) throws Throwable
          {
             ClusterId cid = new ClusterId("test-app3","testSimpleClusterLevelDataThroughApplication");
             
-            MpClusterSession<String, String> session = factory.createSession();
+            ClusterInfoSession session = factory.createSession();
             assertNotNull(pass,session);
             sessionsToClose.add(session);
-            MpApplication<String, String> mpapp = session.getApplication(cid.getApplicationName());
-            MpCluster<String, String> clusterHandle = session.getCluster(cid);
+            ClusterInfoLeaf<String> mpapp = createApplicationLevel(cid,session);
+            @SuppressWarnings("unchecked")
+            ClusterInfoLeaf<String> clusterHandle = (ClusterInfoLeaf<String>)mpapp.createNewChild(cid.getMpClusterName(),false);
             assertNotNull(pass,clusterHandle);
-            Collection<MpCluster<String, String>> clusterHandles = mpapp.getActiveClusters();
+            Collection<ClusterInfoLeaf<?>> clusterHandles = mpapp.getSubLeaves();
             assertNotNull(pass,clusterHandles);
             assertEquals(1,clusterHandles.size());
             assertEquals(clusterHandle,clusterHandles.iterator().next());
 
             String data = "HelloThere";
-            clusterHandle.setClusterData(data);
-            String cdata = clusterHandle.getClusterData();
+            clusterHandle.setData(data);
+            String cdata = clusterHandle.getData();
             assertEquals(pass,data,cdata);
             
             session.stop();
@@ -188,43 +209,44 @@ public class TestAllMpClusterImpls
    @Test
    public void testSimpleJoinTest() throws Throwable
    {
-      runAllCombinations(new Checker<String, String>()
+      runAllCombinations(new Checker()
       {
          @Override
-         public void check(String pass, MpClusterSessionFactory<String, String> factory) throws Throwable
+         public void check(String pass, ClusterInfoSessionFactory factory) throws Throwable
          {
             ClusterId cid = new ClusterId("test-app4","test-cluster");
 
-            MpClusterSession<String, String> session = factory.createSession();
+            ClusterInfoSession session = factory.createSession();
             assertNotNull(pass,session);
             sessionsToClose.add(session);
-            MpCluster<String, String> cluster = session.getCluster(cid);
+            ClusterInfoLeaf<String> cluster = createClusterLevel(cid,session);
             assertNotNull(pass,cluster);
 
-            MpClusterSlot<String> node = cluster.join("Test");
-            Assert.assertEquals(1, cluster.getActiveSlots().size());
+            @SuppressWarnings("unchecked")
+            ClusterInfoLeaf<String> node = (ClusterInfoLeaf<String>)cluster.createNewChild("Test",true);
+            Assert.assertEquals(1, cluster.getSubLeaves().size());
 
             String data = "testSimpleJoinTest-data";
-            node.setSlotInformation(data);
-            Assert.assertEquals(pass,data, node.getSlotInformation());
+            node.setData(data);
+            Assert.assertEquals(pass,data, node.getData());
             
-            node.leave();
+            node.leaveParent();
             
             // wait for no more than ten seconds
             for (long timeToEnd = System.currentTimeMillis() + 10000; timeToEnd > System.currentTimeMillis();)
             {
                Thread.sleep(10);
-               if (cluster.getActiveSlots().size() == 0)
+               if (cluster.getSubLeaves().size() == 0)
                   break;
             }
-            Assert.assertEquals(pass,0, cluster.getActiveSlots().size());
+            Assert.assertEquals(pass,0, cluster.getSubLeaves().size());
             
             session.stop();
          }
       });
    }
    
-   private class TestWatcher implements MpClusterWatcher
+   private class TestWatcher implements ClusterInfoLeafWatcher
    {
       public boolean recdUpdate = false;
       public CountDownLatch latch;
@@ -243,29 +265,30 @@ public class TestAllMpClusterImpls
    @Test
    public void testSimpleWatcherData() throws Throwable
    {
-      runAllCombinations(new Checker<String,String>()
+      runAllCombinations(new Checker()
       {
+         @SuppressWarnings("unchecked")
          @Override
-         public void check(String pass, MpClusterSessionFactory<String,String> factory) throws Throwable
+         public void check(String pass, ClusterInfoSessionFactory factory) throws Throwable
          {
             ClusterId cid = new ClusterId("test-app5","test-cluster");
             
-            MpClusterSession<String, String> mainSession = factory.createSession();
+            ClusterInfoSession mainSession = factory.createSession();
             assertNotNull(pass,mainSession);            
             sessionsToClose.add(mainSession);
             
             TestWatcher mainAppWatcher = new TestWatcher(1);
-            MpApplication<String, String> mpapp = mainSession.getApplication(cid.getApplicationName());
+            ClusterInfoLeaf<String> mpapp = createApplicationLevel(cid,mainSession);
             mpapp.addWatcher(mainAppWatcher);
-            assertEquals(0,mpapp.getActiveClusters().size());
+            assertEquals(0,mpapp.getSubLeaves().size());
             
-            MpClusterSession<String, String> otherSession = factory.createSession();
+            ClusterInfoSession otherSession = factory.createSession();
             assertNotNull(pass,otherSession);
             sessionsToClose.add(otherSession);
             
             assertFalse(pass,mainSession.equals(otherSession));
             
-            MpCluster<String, String> clusterHandle = mainSession.getCluster(cid);
+            ClusterInfoLeaf<String> clusterHandle = (ClusterInfoLeaf<String>)mpapp.createNewChild(cid.getMpClusterName(),false);
             assertNotNull(pass,clusterHandle);
             
             assertTrue(poll(5000, mainAppWatcher, new Condition<TestWatcher>() {
@@ -274,7 +297,7 @@ public class TestAllMpClusterImpls
             
             mainAppWatcher.recdUpdate = false;
 
-            MpCluster<String,String> otherCluster = otherSession.getCluster(cid);
+            ClusterInfoLeaf<String> otherCluster = getClusterLeaf(cid,otherSession);
             assertNotNull(pass,otherCluster);
 
             // in case the mainAppWatcher wrongly receives an update, let's give it a chance. 
@@ -288,7 +311,7 @@ public class TestAllMpClusterImpls
             otherCluster.addWatcher(otherWatcher);
             
             String data = "HelloThere";
-            clusterHandle.setClusterData(data);
+            clusterHandle.setData(data);
             
             // this should have affected otherWatcher 
             assertTrue(pass,otherWatcher.latch.await(5, TimeUnit.SECONDS));
@@ -299,10 +322,10 @@ public class TestAllMpClusterImpls
             assertTrue(pass,mainWatcher.recdUpdate);
             
             // now check access through both sessions and we should see the update.
-            String cdata = clusterHandle.getClusterData();
+            String cdata = clusterHandle.getData();
             assertEquals(pass,data,cdata);
             
-            cdata = otherCluster.getClusterData();
+            cdata = otherCluster.getData();
             assertEquals(pass,data,cdata);
             
             mainSession.stop();
@@ -316,8 +339,8 @@ public class TestAllMpClusterImpls
       });
    }
    
-   private MpClusterSession<String, String> session1;
-   private MpClusterSession<String, String> session2;
+   private ClusterInfoSession session1;
+   private ClusterInfoSession session2;
    private volatile boolean thread1Passed = false;
    private volatile boolean thread2Passed = false;
    private CountDownLatch latch = new CountDownLatch(1);
@@ -327,12 +350,14 @@ public class TestAllMpClusterImpls
    {
       System.out.println("Testing Consumer Cluster");
       
-      runAllCombinations(new Checker<String,String>()
+      runAllCombinations(new Checker()
       {
          @Override
-         public void check(String pass,MpClusterSessionFactory<String,String> factory) throws Throwable
+         public void check(String pass,ClusterInfoSessionFactory factory) throws Throwable
          {
+            final ClusterId cid = new ClusterId("test-app6","test-cluster");
             session1 = factory.createSession();
+            createClusterLevel(cid, session1);
             sessionsToClose.add(session1);
             session2 = factory.createSession();
             sessionsToClose.add(session2);
@@ -342,12 +367,11 @@ public class TestAllMpClusterImpls
                @Override
                public void run()
                {
-                  ClusterId cid = new ClusterId("test-app6","test-cluster");
                   System.out.println("Consumer setting data");
                   try
                   {
-                     MpCluster<String, String> consumer = session1.getCluster(cid);
-                     consumer.setClusterData("Test");
+                     ClusterInfoLeaf<String> consumer = getClusterLeaf(cid,session1);
+                     consumer.setData("Test");
                      thread1Passed = true;
                      latch.countDown();
                   }
@@ -364,13 +388,12 @@ public class TestAllMpClusterImpls
                @Override
                public void run()
                {
-                  ClusterId cid = new ClusterId("test-app6","test-cluster");
                   try
                   {
                      latch.await(10, TimeUnit.SECONDS);
-                     MpCluster<String, String> producer = session2.getCluster(cid);
+                     ClusterInfoLeaf<String> producer = getClusterLeaf(cid,session2);
                      
-                     String data = producer.getClusterData();
+                     String data = producer.getData();
                      if ("Test".equals(data))
                         thread2Passed = true;
                   }
