@@ -31,7 +31,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.AfterClass;
-import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.springframework.context.support.ClassPathXmlApplicationContext;
@@ -42,9 +41,9 @@ import com.nokia.dempsy.mpcluster.zookeeper.ZookeeperTestServer.InitZookeeperSer
 
 public class TestAllClusterImpls
 {
-//   String[] clusterManagers = new String[]{ "testDempsy/ClusterInfo-LocalActx.xml", "testDempsy/ClusterInfo-ZookeeperActx.xml" };
+   String[] clusterManagers = new String[]{ "testDempsy/ClusterInfo-LocalActx.xml", "testDempsy/ClusterInfo-ZookeeperActx.xml" };
 //   String[] clusterManagers = new String[]{ "testDempsy/ClusterInfo-LocalActx.xml" };
-   String[] clusterManagers = new String[]{ "testDempsy/ClusterInfo-ZookeeperActx.xml" };
+//   String[] clusterManagers = new String[]{ "testDempsy/ClusterInfo-ZookeeperActx.xml" };
    
    private List<ClusterInfoSession> sessionsToClose = new ArrayList<ClusterInfoSession>();
 
@@ -91,27 +90,24 @@ public class TestAllClusterImpls
       }
    }
    
-   private static ClusterInfoLeaf<String> createApplicationLevel(ClusterId cid, ClusterInfoSession session) throws ClusterInfoException
+   private static String createApplicationLevel(ClusterId cid, ClusterInfoSession session) throws ClusterInfoException
    {
-      ClusterInfoLeaf<?> root = session.getRoot();
-      @SuppressWarnings("unchecked")
-      ClusterInfoLeaf<String> appHandle = (ClusterInfoLeaf<String>)root.createNewChild(cid.getApplicationName(), false);
-      return appHandle;
+      String ret = "/" + cid.getApplicationName();
+      session.mkdir(ret, false);
+      return ret;
    }
    
-   private static ClusterInfoLeaf<String> createClusterLevel(ClusterId cid, ClusterInfoSession session) throws ClusterInfoException
+   private static String createClusterLevel(ClusterId cid, ClusterInfoSession session) throws ClusterInfoException
    {
-      ClusterInfoLeaf<String> appHandle = createApplicationLevel(cid,session);
-      
-      @SuppressWarnings("unchecked")
-      ClusterInfoLeaf<String> clusterHandle = (ClusterInfoLeaf<String>)appHandle.createNewChild(cid.getMpClusterName(), false);
-      return clusterHandle;
+      String ret = createApplicationLevel(cid,session);
+      ret += ("/" + cid.getMpClusterName());
+      session.mkdir(ret, false);
+      return ret;
    }
    
-   @SuppressWarnings("unchecked")
-   private static ClusterInfoLeaf<String> getClusterLeaf(ClusterId cid, ClusterInfoSession session) throws ClusterInfoException
+   private static String getClusterLeaf(ClusterId cid, ClusterInfoSession session) throws ClusterInfoException
    {
-      return (ClusterInfoLeaf<String>) session.getRoot().getSubLeaf(cid.getApplicationName()).getSubLeaf(cid.getMpClusterName());
+      return session.exists(cid.asPath(), null) ? cid.asPath() : null;
    }
    
    @Test
@@ -127,16 +123,19 @@ public class TestAllClusterImpls
             ClusterInfoSession session = factory.createSession();
             assertNotNull(pass,session);
             sessionsToClose.add(session);
-            ClusterInfoLeaf<String> clusterHandle = createClusterLevel(cid, session);
+            String clusterPath = createClusterLevel(cid, session);
             
-            assertNotNull(pass,clusterHandle);
+            assertEquals(clusterPath,cid.asPath());
+            
+            assertNotNull(pass,clusterPath);
+            assertTrue(pass,session.exists(clusterPath, null));
             
             // there should be nothing currently registered
-            Collection<ClusterInfoLeaf<?>> slots = clusterHandle.getSubLeaves();
+            Collection<String> slots = session.getSubdirs(clusterPath,null);
             assertNotNull(pass,slots);
             assertEquals(pass,0,slots.size());
             
-            assertNull(pass,clusterHandle.getData());
+            assertNull(pass,session.getData(clusterPath,null));
             
             session.stop();
          }
@@ -157,12 +156,12 @@ public class TestAllClusterImpls
             ClusterInfoSession session = factory.createSession();
             assertNotNull(pass,session);
             sessionsToClose.add(session);
-            ClusterInfoLeaf<String> clusterHandle = createClusterLevel(cid,session);
-            assertNotNull(pass,clusterHandle);
+            String clusterPath = createClusterLevel(cid,session);
+            assertNotNull(pass,clusterPath);
 
             String data = "HelloThere";
-            clusterHandle.setData(data);
-            String cdata = clusterHandle.getData();
+            session.setData(clusterPath,data);
+            String cdata = (String)session.getData(clusterPath,null);
             assertEquals(pass,data,cdata);
             
             session.stop();
@@ -184,18 +183,18 @@ public class TestAllClusterImpls
             ClusterInfoSession session = factory.createSession();
             assertNotNull(pass,session);
             sessionsToClose.add(session);
-            ClusterInfoLeaf<String> mpapp = createApplicationLevel(cid,session);
-            @SuppressWarnings("unchecked")
-            ClusterInfoLeaf<String> clusterHandle = (ClusterInfoLeaf<String>)mpapp.createNewChild(cid.getMpClusterName(),false);
-            assertNotNull(pass,clusterHandle);
-            Collection<ClusterInfoLeaf<?>> clusterHandles = mpapp.getSubLeaves();
-            assertNotNull(pass,clusterHandles);
-            assertEquals(1,clusterHandles.size());
-            assertEquals(clusterHandle,clusterHandles.iterator().next());
+            String mpapp = createApplicationLevel(cid,session);
+            String clusterPath = mpapp + "/" + cid.getMpClusterName();
+            assertTrue(pass,session.mkdir(clusterPath, false));
+            assertNotNull(pass,clusterPath);
+            Collection<String> clusterPaths = session.getSubdirs(mpapp,null);
+            assertNotNull(pass,clusterPaths);
+            assertEquals(1,clusterPaths.size());
+            assertEquals(cid.getMpClusterName(),clusterPaths.iterator().next());
 
             String data = "HelloThere";
-            clusterHandle.setData(data);
-            String cdata = clusterHandle.getData();
+            session.setData(clusterPath,data);
+            String cdata = (String)session.getData(clusterPath,null);
             assertEquals(pass,data,cdata);
             
             session.stop();
@@ -205,7 +204,6 @@ public class TestAllClusterImpls
       });
    }
 
-   
    @Test
    public void testSimpleJoinTest() throws Throwable
    {
@@ -216,37 +214,38 @@ public class TestAllClusterImpls
          {
             ClusterId cid = new ClusterId("test-app4","test-cluster");
 
-            ClusterInfoSession session = factory.createSession();
+            final ClusterInfoSession session = factory.createSession();
             assertNotNull(pass,session);
             sessionsToClose.add(session);
-            ClusterInfoLeaf<String> cluster = createClusterLevel(cid,session);
+            String cluster = createClusterLevel(cid,session);
             assertNotNull(pass,cluster);
 
-            @SuppressWarnings("unchecked")
-            ClusterInfoLeaf<String> node = (ClusterInfoLeaf<String>)cluster.createNewChild("Test",true);
-            Assert.assertEquals(1, cluster.getSubLeaves().size());
+            String node = cluster + "/Test";
+            assertTrue(session.mkdir(node,true));
+            assertEquals(1, session.getSubdirs(cluster,null).size());
 
             String data = "testSimpleJoinTest-data";
-            node.setData(data);
-            Assert.assertEquals(pass,data, node.getData());
+            session.setData(node,data);
+            assertEquals(pass,data, session.getData(node,null));
             
-            node.leaveParent();
+            session.rmdir(node);
             
             // wait for no more than ten seconds
-            for (long timeToEnd = System.currentTimeMillis() + 10000; timeToEnd > System.currentTimeMillis();)
+            assertTrue(pass, poll(10000, cluster, new Condition<String>()
             {
-               Thread.sleep(10);
-               if (cluster.getSubLeaves().size() == 0)
-                  break;
-            }
-            Assert.assertEquals(pass,0, cluster.getSubLeaves().size());
+               @Override
+               public boolean conditionMet(String cluster) throws Throwable
+               {
+                  return session.getSubdirs(cluster, null).size() == 0;
+               }
+            })); 
             
             session.stop();
          }
       });
    }
    
-   private class TestWatcher implements ClusterInfoLeafWatcher
+   private class TestWatcher implements ClusterInfoWatcher
    {
       public boolean recdUpdate = false;
       public CountDownLatch latch;
@@ -267,7 +266,6 @@ public class TestAllClusterImpls
    {
       runAllCombinations(new Checker()
       {
-         @SuppressWarnings("unchecked")
          @Override
          public void check(String pass, ClusterInfoSessionFactory factory) throws Throwable
          {
@@ -278,9 +276,10 @@ public class TestAllClusterImpls
             sessionsToClose.add(mainSession);
             
             TestWatcher mainAppWatcher = new TestWatcher(1);
-            ClusterInfoLeaf<String> mpapp = createApplicationLevel(cid,mainSession);
-            mpapp.addWatcher(mainAppWatcher);
-            assertEquals(0,mpapp.getSubLeaves().size());
+            String mpapp = createApplicationLevel(cid,mainSession);
+            assertTrue(mainSession.exists(mpapp,null));
+            mainSession.getSubdirs(mpapp, mainAppWatcher); // register mainAppWatcher for subdir
+            assertEquals(0,mainSession.getSubdirs(mpapp,null).size());
             
             ClusterInfoSession otherSession = factory.createSession();
             assertNotNull(pass,otherSession);
@@ -288,8 +287,9 @@ public class TestAllClusterImpls
             
             assertFalse(pass,mainSession.equals(otherSession));
             
-            ClusterInfoLeaf<String> clusterHandle = (ClusterInfoLeaf<String>)mpapp.createNewChild(cid.getMpClusterName(),false);
-            assertNotNull(pass,clusterHandle);
+            String clusterHandle = mpapp + "/" + cid.getMpClusterName();
+            mainSession.mkdir(clusterHandle,false);
+            assertTrue(pass,mainSession.exists(clusterHandle,null));
             
             assertTrue(poll(5000, mainAppWatcher, new Condition<TestWatcher>() {
                public boolean conditionMet(TestWatcher o) { return o.recdUpdate;  }
@@ -297,21 +297,22 @@ public class TestAllClusterImpls
             
             mainAppWatcher.recdUpdate = false;
 
-            ClusterInfoLeaf<String> otherCluster = getClusterLeaf(cid,otherSession);
+            String otherCluster = getClusterLeaf(cid,otherSession);
             assertNotNull(pass,otherCluster);
+            assertEquals(pass,clusterHandle,otherCluster);
 
             // in case the mainAppWatcher wrongly receives an update, let's give it a chance. 
             Thread.sleep(500);
             assertFalse(mainAppWatcher.recdUpdate);
 
             TestWatcher mainWatcher = new TestWatcher(1);
-            clusterHandle.addWatcher(mainWatcher);
+            assertTrue(mainSession.exists(clusterHandle,mainWatcher));
             
             TestWatcher otherWatcher = new TestWatcher(1);
-            otherCluster.addWatcher(otherWatcher);
+            assertTrue(otherSession.exists(otherCluster,otherWatcher));
             
             String data = "HelloThere";
-            clusterHandle.setData(data);
+            mainSession.setData(clusterHandle,data);
             
             // this should have affected otherWatcher 
             assertTrue(pass,otherWatcher.latch.await(5, TimeUnit.SECONDS));
@@ -322,10 +323,10 @@ public class TestAllClusterImpls
             assertTrue(pass,mainWatcher.recdUpdate);
             
             // now check access through both sessions and we should see the update.
-            String cdata = clusterHandle.getData();
+            String cdata = (String)mainSession.getData(clusterHandle,null);
             assertEquals(pass,data,cdata);
             
-            cdata = otherCluster.getData();
+            cdata = (String)otherSession.getData(otherCluster,null);
             assertEquals(pass,data,cdata);
             
             mainSession.stop();
@@ -348,8 +349,6 @@ public class TestAllClusterImpls
    @Test
    public void testConsumerCluster() throws Throwable
    {
-      System.out.println("Testing Consumer Cluster");
-      
       runAllCombinations(new Checker()
       {
          @Override
@@ -367,11 +366,10 @@ public class TestAllClusterImpls
                @Override
                public void run()
                {
-                  System.out.println("Consumer setting data");
                   try
                   {
-                     ClusterInfoLeaf<String> consumer = getClusterLeaf(cid,session1);
-                     consumer.setData("Test");
+                     String consumer = getClusterLeaf(cid,session1);
+                     session1.setData(consumer,"Test");
                      thread1Passed = true;
                      latch.countDown();
                   }
@@ -391,9 +389,9 @@ public class TestAllClusterImpls
                   try
                   {
                      latch.await(10, TimeUnit.SECONDS);
-                     ClusterInfoLeaf<String> producer = getClusterLeaf(cid,session2);
+                     String producer = getClusterLeaf(cid,session2);
                      
-                     String data = producer.getData();
+                     String data = (String)session2.getData(producer,null);
                      if ("Test".equals(data))
                         thread2Passed = true;
                   }
@@ -416,4 +414,41 @@ public class TestAllClusterImpls
          }
       });
    }
+   
+   @Test
+   public void testGetSetDataNoNode() throws Throwable
+   {
+      runAllCombinations(new Checker()
+      {
+         @Override
+         public void check(String pass, ClusterInfoSessionFactory factory) throws Throwable
+         {
+            ClusterId cid = new ClusterId("test-app7","test-cluster");
+
+            final ClusterInfoSession session = factory.createSession();
+            assertNotNull(pass,session);
+            sessionsToClose.add(session);
+            String cluster = createClusterLevel(cid,session);
+            assertNotNull(pass,cluster);
+
+            String node = cluster + "/Test";
+            String data = "testSimpleJoinTest-data";
+            boolean gotExpectedException = false;
+            try { session.setData(node,data); } catch (ClusterInfoException e){ gotExpectedException = true; }
+            assertTrue(pass,gotExpectedException);
+            
+            gotExpectedException = false;
+            try { session.rmdir(node); } catch (ClusterInfoException e){ gotExpectedException = true; }
+            assertTrue(pass,gotExpectedException);
+            
+            gotExpectedException = false;
+            try { session.getData(node,null); } catch (ClusterInfoException e){ gotExpectedException = true; }
+            assertTrue(pass,gotExpectedException);
+            
+            session.stop();
+         }
+      });
+   }
+   
+
 }

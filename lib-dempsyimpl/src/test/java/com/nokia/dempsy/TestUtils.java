@@ -20,10 +20,10 @@ public class TestUtils
 {
    public static interface Condition<T>
    {
-      public boolean conditionMet(T o);
+      public boolean conditionMet(T o) throws Throwable;
    }
 
-   public static <T> boolean poll(long timeoutMillis, T userObject, Condition<T> condition) throws InterruptedException
+   public static <T> boolean poll(long timeoutMillis, T userObject, Condition<T> condition) throws Throwable
    {
       for (long endTime = System.currentTimeMillis() + timeoutMillis;
             endTime > System.currentTimeMillis() && !condition.conditionMet(userObject);)
@@ -32,7 +32,7 @@ public class TestUtils
    }
    
    public static boolean waitForClustersToBeInitialized(long timeoutMillis, 
-         final int numSlotsPerCluster, Dempsy dempsy) throws InterruptedException
+         final int numSlotsPerCluster, Dempsy dempsy) throws Throwable
    {
       try
       {

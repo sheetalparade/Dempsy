@@ -16,10 +16,14 @@
 
 package com.nokia.dempsy.cluster.invm;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -27,10 +31,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.nokia.dempsy.cluster.ClusterInfoException;
-import com.nokia.dempsy.cluster.ClusterInfoLeaf;
-import com.nokia.dempsy.cluster.ClusterInfoLeafWatcher;
 import com.nokia.dempsy.cluster.ClusterInfoSession;
 import com.nokia.dempsy.cluster.ClusterInfoSessionFactory;
+import com.nokia.dempsy.cluster.ClusterInfoWatcher;
 import com.nokia.dempsy.internal.util.SafeString;
 
 /**
@@ -42,9 +45,167 @@ import com.nokia.dempsy.internal.util.SafeString;
 public class LocalClusterSessionFactory implements ClusterInfoSessionFactory
 {
    private static Logger logger = LoggerFactory.getLogger(LocalClusterSessionFactory.class);
-
    private List<LocalSession> currentSessions = new CopyOnWriteArrayList<LocalSession>();
-   private LocalSession.LocalLeaf<?> root = null;
+
+   // ====================================================================
+   // This section pertains to the management of the tree information
+   private Map<String,Entry> entries = new HashMap<String,Entry>();
+
+   private static class Entry
+   {
+      private AtomicReference<Object> data = new AtomicReference<Object>();
+      private Set<ClusterInfoWatcher> nodeWatchers = new HashSet<ClusterInfoWatcher>();
+      private Set<ClusterInfoWatcher> childWatchers = new HashSet<ClusterInfoWatcher>();
+      private Collection<String> children = new ArrayList<String>();
+
+      private volatile boolean inProcess = false;
+      private volatile boolean recursionAttempt = false;
+      private Object processLock = new Object();
+      
+      private void callWatchers(boolean node, boolean child)
+      {
+         Set<ClusterInfoWatcher> twatchers = new HashSet<ClusterInfoWatcher>();
+         if (node)
+         {
+            twatchers.addAll(nodeWatchers);
+            nodeWatchers = new HashSet<ClusterInfoWatcher>();
+         }
+         if (child)
+         {
+            twatchers.addAll(childWatchers);
+            childWatchers = new HashSet<ClusterInfoWatcher>();
+         }
+         
+         synchronized(processLock)
+         {
+            if (inProcess)
+            {
+               recursionAttempt = true;
+               return;
+            }
+
+            do
+            {
+               recursionAttempt = false;
+               inProcess = true;
+
+               for(ClusterInfoWatcher watcher: twatchers)
+               {
+                  try
+                  {
+                     watcher.process();
+                  }
+                  catch (RuntimeException e)
+                  {
+                     logger.error("Failed to handle process for watcher " + SafeString.objectDescription(watcher),e);
+                  }
+               }
+            } while (recursionAttempt);
+
+            inProcess = false;
+         }
+      }
+   }
+
+   private static String parent(String path)
+   {
+      File f = new File(path);
+      return f.getParent();
+   }
+   
+   private static boolean isRoot(String path) { return "/".equals(path); }
+   
+   private Entry get(String absolutePath, ClusterInfoWatcher watcher, boolean nodeWatch) throws ClusterInfoException
+   {
+      Entry ret;
+      ret = entries.get(absolutePath);
+      if (ret == null)
+         throw new ClusterInfoException("Path \"" + absolutePath + "\" doesn't exists.");
+      if (watcher != null)
+      {
+         if (nodeWatch)
+            ret.nodeWatchers.add(watcher);
+         else
+            ret.childWatchers.add(watcher);
+      }
+      return ret;
+   }
+   
+   private synchronized Object ogetData(String path, ClusterInfoWatcher watcher) throws ClusterInfoException
+   {
+      Entry e = get(path,watcher,true);
+      return e.data.get();
+   }
+   
+   private synchronized void osetData(String path, Object data) throws ClusterInfoException
+   {
+      Entry e = get(path,null,true);
+      e.data.set(data);
+      e.callWatchers(true,false);
+   }
+   
+   private synchronized boolean oexists(String path,ClusterInfoWatcher watcher)
+   {
+      Entry e = entries.get(path);
+      if (e != null && watcher != null)
+         e.nodeWatchers.add(watcher);
+      return e != null;
+   }
+   
+   private synchronized boolean omkdir(String path) throws ClusterInfoException
+   {
+      if (oexists(path,null))
+         return false;
+      
+      String parentPath = parent(path);
+      Entry parent = null;
+      
+      if (!isRoot(parentPath))
+      {
+         parent = entries.get(parentPath);
+         if (parent == null)
+         {
+            throw new ClusterInfoException("No Parent for \"" + path + "\" which is expected to be \"" +
+                  parent(path) + "\"");
+         }
+      }
+
+      entries.put(path, new Entry());
+      if (parent != null)
+      {
+         // find the relative path
+         int lastSlash = path.lastIndexOf('/');
+         parent.children.add(path.substring(lastSlash + 1));
+         parent.callWatchers(false,true);
+      }
+      return true;
+   }
+   
+   private synchronized void ormdir(String path) throws ClusterInfoException
+   {
+      Entry ths = entries.get(path);
+      if (ths == null)
+         throw new ClusterInfoException("rmdir of non existant node \"" + path + "\"");
+      
+      Entry parent = entries.get(parent(path));
+      entries.remove(path);
+      if (parent != null)
+      {
+         int lastSlash = path.lastIndexOf('/');
+         parent.children.remove(path.substring(lastSlash + 1));
+         parent.callWatchers(false,true);
+      }
+      ths.callWatchers(true, true);
+   }
+   
+   private synchronized Collection<String> ogetSubdirs(String path, ClusterInfoWatcher watcher) throws ClusterInfoException
+   {
+      Entry e = get(path,watcher,false);
+      Collection<String>ret = new ArrayList<String>(e.children.size());
+      ret.addAll(e.children);
+      return ret;
+   }
+   // ====================================================================
    
    @Override
    public ClusterInfoSession createSession()
@@ -56,151 +217,49 @@ public class LocalClusterSessionFactory implements ClusterInfoSessionFactory
    
    public class LocalSession implements ClusterInfoSession
    {
-      @SuppressWarnings({"unchecked","rawtypes"})
-      private LocalSession()
-      {
-         synchronized (LocalClusterSessionFactory.this)
-         {
-            if (root == null)
-               root = new LocalLeaf(null,null);
-         }
-      }
-      
+
       @Override
-      public ClusterInfoLeaf<?> getRoot() { return root; }
-      
+      public boolean mkdir(String path, boolean ephemeral) throws ClusterInfoException
+      {
+         return omkdir(path);
+      }
+
+      @Override
+      public void rmdir(String path) throws ClusterInfoException
+      {
+         ormdir(path);
+      }
+
+      @Override
+      public boolean exists(String path, ClusterInfoWatcher watcher) throws ClusterInfoException
+      {
+         return oexists(path,watcher);
+      }
+
+      @Override
+      public Object getData(String path, ClusterInfoWatcher watcher) throws ClusterInfoException
+      {
+         return ogetData(path,watcher);
+      }
+
+      @Override
+      public void setData(String path, Object data) throws ClusterInfoException
+      {
+         osetData(path,data);
+      }
+
+      @Override
+      public Collection<String> getSubdirs(String path, ClusterInfoWatcher watcher) throws ClusterInfoException
+      {
+         return ogetSubdirs(path,watcher);
+      }
+
       @Override
       public void stop()
       {
-         
+         currentSessions.remove(this);
       }
-      
-      public class LocalLeaf<T> implements ClusterInfoLeaf<T>
-      {
-         protected ConcurrentHashMap<String, ClusterInfoLeaf<?>> children = new ConcurrentHashMap<String, ClusterInfoLeaf<?>>();
-         
-         private List<ClusterInfoLeafWatcher> watchers = new ArrayList<ClusterInfoLeafWatcher>();
-         private Object processLock = new Object();
-         private String path;
-         private AtomicReference<T> data = new AtomicReference<T>();
-         private LocalLeaf<?> parent;
-         
-         private LocalLeaf(String path, LocalLeaf<?> rent)
-         {
-            this.path = path;
-            this.parent = rent;
-         }
 
-         @Override
-         public synchronized void addWatcher(ClusterInfoLeafWatcher watch)
-         {
-            if(!watchers.contains(watch))
-               watchers.add(watch);
-         }
-         
-         @Override
-         public Collection<ClusterInfoLeaf<?>> getSubLeaves()
-         {
-            return children.values();
-         }
-         
-         @Override
-         public ClusterInfoLeaf<?> getSubLeaf(String path)
-         {
-            return children.get(path);
-         }
-
-         @Override
-         public T getData() 
-         {
-            return data == null ? null : data.get();
-         }
-         
-         @Override
-         public void setData(T data)
-         {
-            this.data.set(data);
-            callUpdateWatchersForCluster();
-         }
-
-         @Override
-         public String getLeafName() { return path; }
-         
-         @Override
-         public void leaveParent() throws ClusterInfoException
-         {
-            if (parent == null)
-               throw new ClusterInfoException("Leave parent called on " + SafeString.objectDescription(this) + 
-                     " which is at the root of the ClusterInfo tree.");
-            parent.remove(getLeafName());
-         }
-         
-         private void remove(String childPath) throws ClusterInfoException
-         {
-            Object child = children.remove(childPath);
-            if (child == null)
-               throw new ClusterInfoException("Parent ClusterInfo tree node has no child with the path " + childPath);
-            callUpdateWatchersForCluster();
-         }
-            
-         @Override
-         public ClusterInfoLeaf<?> createNewChild(String path, boolean ephemeral)
-         {
-            // This can't return null due to the constructor
-            @SuppressWarnings({"unchecked","rawtypes"})
-            ClusterInfoLeaf<?> ret = new LocalLeaf(path,this);
-            ClusterInfoLeaf<?> tmp = children.putIfAbsent(path,ret);
-            
-            if (tmp != null) // this indicates that there was one here already
-            {
-               if(logger.isDebugEnabled())
-                  logger.debug("The leaf " + this.path + " already contains the path " + path);
-               return null;
-            }
-            
-            // if we got here then we added a slot. ... so update
-            callUpdateWatchersForCluster();
-            
-            return ret;
-         }
-
-         private final void callUpdateWatchersForCluster()
-         {
-            synchronized(processLock)
-            {
-               if (inProcess)
-               {
-                  recursionAttempt = true;
-                  return;
-               }
-
-               do
-               {
-                  recursionAttempt = false;
-                  inProcess = true;
-
-                  for(ClusterInfoLeafWatcher watcher: watchers)
-                  {
-                     try
-                     {
-                        watcher.process();
-                     }
-                     catch (RuntimeException e)
-                     {
-                        logger.error("Failed to handle process for watcher " + SafeString.objectDescription(watcher),e);
-                     }
-                  }
-               } while (recursionAttempt);
-
-               inProcess = false;
-            }
-         }
-         
-      } // end leaf node definition
-      
-      private volatile boolean inProcess = false;
-      private volatile boolean recursionAttempt = false;
-      
    } // end session definition
 
 }

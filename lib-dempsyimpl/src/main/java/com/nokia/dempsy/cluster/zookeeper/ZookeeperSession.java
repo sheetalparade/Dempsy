@@ -19,10 +19,8 @@ package com.nokia.dempsy.cluster.zookeeper;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -32,69 +30,140 @@ import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
-import org.apache.zookeeper.Watcher.Event.KeeperState;
 import org.apache.zookeeper.ZooDefs.Ids;
 import org.apache.zookeeper.ZooKeeper;
-import org.apache.zookeeper.data.Stat;
 import org.codehaus.jackson.map.ObjectMapper;
 import org.codehaus.jackson.map.SerializationConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.nokia.dempsy.cluster.ClusterInfoException;
-import com.nokia.dempsy.cluster.ClusterInfoLeaf;
-import com.nokia.dempsy.cluster.ClusterInfoLeafWatcher;
 import com.nokia.dempsy.cluster.ClusterInfoSession;
+import com.nokia.dempsy.cluster.ClusterInfoWatcher;
 import com.nokia.dempsy.internal.util.SafeString;
-import com.nokia.dempsy.mpcluster.MpClusterException;
-import com.nokia.dempsy.mpcluster.MpClusterSlot;
 import com.nokia.dempsy.serialization.SerializationException;
 import com.nokia.dempsy.serialization.Serializer;
 
 public class ZookeeperSession implements ClusterInfoSession
 {
-   private Logger logger = LoggerFactory.getLogger(ZookeeperSession.class);
-   
-   protected volatile AtomicReference<ZooKeeper> zkref;
+   private static Logger logger = LoggerFactory.getLogger(ZookeeperSession.class);
+
+   private volatile AtomicReference<ZooKeeper> zkref;
+
    private volatile boolean isRunning = true;
-   private ZookeeperLeaf<?> root;
-   
    protected long resetDelay = 500;
    protected String connectString;
    protected int sessionTimeout;
+   private Serializer<Object> serializer = new JSONSerializer<Object>();
+   
+   private Set<WatcherProxy> registeredWatchers = new HashSet<WatcherProxy>();
    
    protected ZookeeperSession(String connectString, int sessionTimeout) throws IOException
    {
       this.connectString = connectString;
       this.sessionTimeout = sessionTimeout;
       this.zkref = new AtomicReference<ZooKeeper>();
-      ZooKeeper newZk = makeZookeeperInstance(connectString,sessionTimeout);
+      ZooKeeper newZk = makeZooKeeperClient(connectString,sessionTimeout);
       if (newZk != null) setNewZookeeper(newZk);
-      root = makeZookeeperLeaf(null,null,false);
    }
-   
-   /**
-    * This is defined here to be overridden in a test.
-    */
-   protected ZooKeeper makeZookeeperInstance(String connectString, int sessionTimeout) throws IOException
+
+   @Override
+   public boolean mkdir(String path, boolean ephemeral) throws ClusterInfoException
    {
-      return new ZooKeeper(connectString, sessionTimeout, new ZkWatcher());
+      Object ret = callZookeeper("mkdir", path, null, ephemeral, new ZookeeperCall()
+      {
+         @Override
+         public Object call(ZooKeeper cur, String path, WatcherProxy watcher, Object userdata) throws KeeperException, InterruptedException, SerializationException
+         {
+            cur.create(path, new byte[0], Ids.OPEN_ACL_UNSAFE, ((Boolean)userdata).booleanValue() ? CreateMode.EPHEMERAL : CreateMode.PERSISTENT);
+            return true;
+         }
+      });
+      return ((Boolean)ret).booleanValue();
    }
-   
-   /**
-    * This is defined here to be overridden in a test.
-    */
-   @SuppressWarnings({"rawtypes","unchecked"})
-   protected ZookeeperLeaf<?> makeZookeeperLeaf(String path, ZookeeperLeaf<?> parent, boolean isEphemeral)
+
+   @Override
+   public void rmdir(String path) throws ClusterInfoException
    {
-      return new ZookeeperLeaf(path,parent,isEphemeral);
+      callZookeeper("rmdir", path, null, null, new ZookeeperCall()
+      {
+         @Override
+         public Object call(ZooKeeper cur, String path, WatcherProxy watcher, Object userdata) throws KeeperException, InterruptedException, SerializationException
+         {
+            cur.delete(path,-1);
+            return null;
+         }
+      });
    }
-   
-   public ClusterInfoLeaf<?> getRoot()
+
+   @Override
+   public boolean exists(String path, ClusterInfoWatcher watcher) throws ClusterInfoException
    {
-      return root;
+      Object ret = callZookeeper("exists", path, watcher, null, new ZookeeperCall()
+      {
+         @Override
+         public Object call(ZooKeeper cur, String path, WatcherProxy wp, Object userdata) throws KeeperException, InterruptedException, SerializationException
+         {
+            return wp == null ? 
+                  (cur.exists(path,true) == null ? false : true) :
+                     (cur.exists(path,wp) == null ? false : true);
+         }
+      });
+      return ((Boolean)ret).booleanValue();
    }
-   
+
+   @Override
+   public Object getData(String path, ClusterInfoWatcher watcher) throws ClusterInfoException
+   {
+      return callZookeeper("getData", path, watcher, null, new ZookeeperCall()
+      {
+         @Override
+         public Object call(ZooKeeper cur, String path, WatcherProxy wp, Object userdata) throws KeeperException, InterruptedException, SerializationException
+         {
+            byte[] ret = wp == null ? 
+                  cur.getData(path, true, null) :
+                     cur.getData(path, wp, null);
+
+            if (ret != null && ret.length > 0)
+               return serializer.deserialize(ret);
+            return null;
+         }
+      });
+   }
+
+   @Override
+   public void setData(String path, Object info) throws ClusterInfoException
+   {
+      callZookeeper("mkdir", path, null, info, new ZookeeperCall()
+      {
+         @Override
+         public Object call(ZooKeeper cur, String path, WatcherProxy watcher, Object info) throws KeeperException, InterruptedException, SerializationException
+         {
+            byte[] buf = null;
+            if (info != null)
+               // Serialize to a byte array
+               buf = serializer.serialize(info);
+
+            zkref.get().setData(path, buf, -1);
+            return null;
+         }
+      });
+   }
+
+   @SuppressWarnings("unchecked")
+   @Override
+   public Collection<String> getSubdirs(String path, ClusterInfoWatcher watcher) throws ClusterInfoException
+   {
+      return (Collection<String>)callZookeeper("getSubdirs", path, watcher, null, new ZookeeperCall()
+      {
+         @Override
+         public Object call(ZooKeeper cur, String path, WatcherProxy wp, Object userdata) throws KeeperException, InterruptedException, SerializationException
+         {
+            return wp == null ? cur.getChildren(path, true) : cur.getChildren(path, wp);
+         }
+      });
+   }
+
    @Override
    public void stop()
    {
@@ -106,32 +175,110 @@ public class ZookeeperSession implements ClusterInfoSession
          zkref = null; // this blows up any more usage
       }
 
-      root.stop();
       try { curZk.get().close(); } catch (Throwable th) { /* let it go otherwise */ }
    }
    
-   private synchronized void setNewZookeeper(ZooKeeper newZk)
+   /**
+    * This is defined here to be overridden in a test.
+    */
+   protected ZooKeeper makeZooKeeperClient(String connectString, int sessionTimeout) throws IOException
    {
-      if (logger.isTraceEnabled())
-         logger.trace("reestablished connection to " + connectString);
-      
-      if (isRunning)
+      return new ZooKeeper(connectString, sessionTimeout, new Watcher()
       {
-         ZooKeeper last = zkref.getAndSet(newZk);
-         if (last != null)
+         @Override
+         public void process(WatchedEvent event)
          {
-            try { last.close(); } catch (Throwable th) {}
+            if (logger.isTraceEnabled())
+               logger.trace("CALLBACK:Main Watcher:" + event);
          }
-      }
-      else
+      });
+   }
+
+   
+   private class WatcherProxy implements Watcher
+   {
+      private ClusterInfoWatcher watcher;
+      
+      private WatcherProxy(ClusterInfoWatcher watcher)
       {
-         // in this case with zk == null we're shutting down.
-         try { newZk.close(); } catch (Throwable th) {}
+         this.watcher = watcher;
+      }
+      
+      @Override
+      public void process(WatchedEvent event)
+      {
+         synchronized(registeredWatchers)
+         {
+            registeredWatchers.remove(this);
+         }
+         
+         try
+         {
+            synchronized(this)
+            {
+               watcher.process();
+            }
+         }
+         catch (RuntimeException rte)
+         {
+            logger.warn("Watcher " + SafeString.objectDescription(watcher) + 
+                  " threw an exception in it's \"process\" call.",rte);
+         }
       }
    }
    
-   protected final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
-   protected volatile boolean beingReset = false;
+   private interface ZookeeperCall
+   {
+      public Object call(ZooKeeper cur, String path, WatcherProxy watcher, Object userdata) throws KeeperException, InterruptedException, SerializationException;
+   }
+   
+   private Object callZookeeper(String name, String path, ClusterInfoWatcher watcher, Object userdata, ZookeeperCall callee) throws ClusterInfoException
+   {
+      if (isRunning)
+      {
+         WatcherProxy wp = watcher != null ? new WatcherProxy(watcher) : null;
+         if (wp != null)
+         {
+            synchronized (registeredWatchers)
+            {
+               registeredWatchers.add(wp);
+            }
+         }
+
+         ZooKeeper cur = zkref.get();
+         try
+         {
+            return callee.call(cur, path, wp, userdata);
+         }
+         catch(KeeperException.NodeExistsException e)
+         {         
+
+            if(logger.isDebugEnabled())
+               logger.debug("Failed call to " + name + " at " + path);
+            return false;
+         }
+         catch(KeeperException e)
+         {
+            resetZookeeper(cur);
+            throw new ClusterInfoException("Zookeeper failed while trying to " + name + " at " + path,e);
+         }
+         catch(InterruptedException e)
+         {
+            resetZookeeper(cur);
+            throw new ClusterInfoException("Interrupted while trying to " + name + " at " + path,e);
+         }
+         catch(SerializationException e)
+         {
+            throw new ClusterInfoException("Failed to deserialize the object durring a " + name + " call at " + path,e);
+         }
+
+      }
+
+      throw new ClusterInfoException(name + " called on stopped ZookeeperSession.");
+   }
+   
+   private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+   private volatile boolean beingReset = false;
    
    private synchronized void resetZookeeper(ZooKeeper failedInstance)
    {
@@ -150,7 +297,7 @@ public class ZookeeperSession implements ClusterInfoSession
                ZooKeeper newZk = null;
                try
                {
-                  newZk = makeZookeeperInstance(connectString, sessionTimeout);
+                  newZk = makeZooKeeperClient(connectString, sessionTimeout);
                }
                catch (IOException e)
                {
@@ -182,8 +329,9 @@ public class ZookeeperSession implements ClusterInfoSession
                      beingReset = false;
                   }
                   
-                  // now reset the watchers
-                  root.reset(true);
+                  // now notify the watchers
+                  for (WatcherProxy watcher : registeredWatchers)
+                     watcher.process(null);
                }
                else if (newZk != null)
                {
@@ -194,422 +342,81 @@ public class ZookeeperSession implements ClusterInfoSession
          }, resetDelay, TimeUnit.MILLISECONDS);
       }
    }
-   
-   private boolean mkdir(ZooKeeper cur, String path, Watcher watcher, CreateMode mode) 
+
+   private synchronized void setNewZookeeper(ZooKeeper newZk)
    {
-      try 
+      if (logger.isTraceEnabled())
+         logger.trace("reestablished connection to " + connectString);
+      
+      if (isRunning)
       {
-         Stat s = watcher == null ? cur.exists(path,false) : cur.exists(path, watcher);
-         if (s == null)
+         ZooKeeper last = zkref.getAndSet(newZk);
+         if (last != null)
          {
-            try
-            {
-               cur.create(path, new byte[0], Ids.OPEN_ACL_UNSAFE, mode);
-            }
-            // this is actually ok. It means we lost the race.
-            catch (KeeperException.NodeExistsException nee) { }
-            if (watcher == null ? (cur.exists(path, false) == null) : (cur.exists(path, watcher) == null))
-            {
-               logger.error("Could neither create nor get the node for " + path);
-               resetZookeeper(cur);
-            }
-         }
-         return true;
-      }
-      catch (KeeperException e) 
-      {
-         logger.warn("Failed to create the root node (" + path + ") on provided zookeeper instance.",e);
-         resetZookeeper(cur);
-      } 
-      catch (InterruptedException e) 
-      {
-         logger.warn("Attempt to initialize the zookeeper client for (" + path + ") was interrupted.",e);
-         resetZookeeper(cur);
-      }
-      return false;
-   }
-   
-   private class WatcherManager implements Watcher
-   {
-      private CopyOnWriteArraySet<ClusterInfoLeafWatcher> watchers = new CopyOnWriteArraySet<ClusterInfoLeafWatcher>();
-      private Object processLock = new Object();
-      private String idForLogging;
-      
-      private WatcherManager(String idForLogging) { this.idForLogging = idForLogging; }
-      
-      public void addWatcher(ClusterInfoLeafWatcher watch)
-      {
-         // set semantics adds it only if it's not there already
-         watchers.add(watch); // to avoid a potential race condition, we clear the allSlots
-         clearState(null);
-      }
-      
-      /**
-       * This method makes sure there are no watchers running a process and
-       * clears the list of watchers.
-       */
-      protected void stop()
-      {
-         watchers.clear();
-         
-         synchronized(processLock)
-         {
-            // this just holds up if process is currently running ...
-            // if process isn't running then the above clear should 
-            //   prevent and watcher.process calls from ever being made.
+            try { last.close(); } catch (Throwable th) {}
          }
       }
-      
-      protected void clearState(WatchedEvent event) {}
-      
-      @Override
-      public void process(WatchedEvent event)
+      else
       {
-         // event = null means it was called explicitly
-         if (logger.isDebugEnabled() && event != null)
-            logger.debug("CALLBACK:MpContainerCluster for " + idForLogging + " Event:" + event);
-
-         boolean kickOffProcess = true;
-         if (event != null)
-         {
-            if (event.getType() == Watcher.Event.EventType.NodeChildrenChanged)
-               clearState(event);
-
-            // when we're not connected we want to reset
-            if (event.getState() != KeeperState.SyncConnected)
-            {
-               kickOffProcess = false; // no reason to execute process if we're going to reset zookeeper.
-               
-               clearState(event);
-
-               if (isRunning)
-                  resetZookeeper(zkref.get());
-            }
-         }
-
-         if (kickOffProcess)
-         {
-            synchronized(processLock)
-            {
-               for(ClusterInfoLeafWatcher watch: watchers)
-                  watch.process();
-            }
-         }
+         // in this case with zk == null we're shutting down.
+         try { newZk.close(); } catch (Throwable th) {}
       }
    }
    
-   private class ZookeeperLeaf<T> extends WatcherManager implements ClusterInfoLeaf<T>
+   private class JSONSerializer<TS> implements Serializer<TS>
    {
-      private String path;
-      private ZookeeperPath zkPath;
-      private Map<String, ClusterInfoLeaf<?>> children = new HashMap<String, ClusterInfoLeaf<?>>();
-      private boolean isEphemeral = true;
-      private ZookeeperLeaf<?> parent = null;
-      private Serializer<T> serializer;
+      ObjectMapper objectMapper;
 
-      protected ZookeeperLeaf(String path, ZookeeperLeaf<?> parent, boolean isEphemeral)
+      public JSONSerializer()
       {
-         super(path);
-         this.path = path;
-         zkPath = new ZookeeperPath(parent,path);
-         this.parent = parent;
-         this.isEphemeral = isEphemeral;
-         serializer = new JSONSerializer<T>();
-      }
-      
-      @Override
-      public ClusterInfoLeaf<?> getSubLeaf(String path)
-      {
-         synchronized(children)
-         {
-            return children.get(path);
-         }
-      }
-      
-      @Override
-      public Collection<ClusterInfoLeaf<?>> getSubLeaves()
-      {
-         synchronized(children)
-         {
-            return children.values();
-         }
-      }
-      
-      @Override
-      public String getLeafName() { return path; }
-      
-      /**
-       * Joins the cluster slot with given nodeName
-       * 
-       * @return {@link MpClusterSlot} the newly created cluster slot if successful, else returns null.
-       * 
-       * @exception MpClusterException - due to connectivity issues, interrupts or illegal arguments. 
-       */
-      @Override
-      public synchronized ClusterInfoLeaf<?> createNewChild(String nodeName, boolean ephemeral) throws ClusterInfoException
-      {
-         @SuppressWarnings({"unchecked","rawtypes"})
-         ZookeeperLeaf<?> ret  = new ZookeeperLeaf(nodeName,this,ephemeral);
-         return ret.join(ephemeral) ? ret : null;
-      }
-      
-      @Override
-      protected void stop()
-      {
-         synchronized(children)
-         {
-            for (ClusterInfoLeaf<?> child : children.values())
-               ((ZookeeperLeaf<?>)child).stop();
-            children.clear();
-         }
-
-         super.stop();
-      }
-      
-      private void reset(boolean forceWatcherCall)
-      {
-         if (isEphemeral)
-            return;
-         
-         ZooKeeper cur = null;
-         if (isRunning)
-            cur = zkref.get();
-
-         // if we're not the root, then we need to create the path.
-         if (parent != null)
-            mkdir(cur,zkPath.toString(),this,CreateMode.PERSISTENT);
-
-         synchronized(children)
-         {
-            // now remove all of the ephemeral leaves from children
-            List<String> toRemove = new ArrayList<String>();
-            for (Map.Entry<String, ClusterInfoLeaf<?>> entry : children.entrySet())
-            {
-               ZookeeperLeaf<?> leaf = ((ZookeeperLeaf<?>)entry.getValue());
-               if (leaf.isEphemeral)
-                  toRemove.add(entry.getKey());
-            }
-
-            // now remove all ephemeral's
-            for (String pathToRemove : toRemove)
-               children.remove(pathToRemove);
-         }
-         
-         if (forceWatcherCall)
-            process(null);
-
-         // now go through the remaining children and reset them.
-         for (ClusterInfoLeaf<?> leaf : children.values())
-            ((ZookeeperLeaf<?>)leaf).reset(forceWatcherCall);
-      }
-      
-      private boolean join(boolean ephemeral) throws ClusterInfoException
-      {
-         if (isRunning)
-         {
-            ZooKeeper cur = zkref.get();
-            try
-            {
-               cur.create(zkPath.path, new byte[0], Ids.OPEN_ACL_UNSAFE, ephemeral ? CreateMode.EPHEMERAL : CreateMode.PERSISTENT);
-               return true;
-            }
-            catch(KeeperException.NodeExistsException e)
-            {
-               if(logger.isDebugEnabled())
-                  logger.debug("Failed to join the cluster " + path + 
-                        ". Couldn't create the node within zookeeper using \"" + zkPath + "\"");
-               return false;
-            }
-            catch(KeeperException e)
-            {
-               resetZookeeper(cur);
-               throw new ClusterInfoException("Zookeeper failed while trying to join the cluster " + path + 
-                     ". Couldn't create the node within zookeeper using \"" + zkPath + "\"",e);
-            }
-            catch(InterruptedException e)
-            {
-               resetZookeeper(cur);
-               throw new ClusterInfoException("Interrupted while trying to join the cluster " + path + 
-                     ". Couldn't create the node within zookeeper using \"" + zkPath + "\"",e);
-            }
-         }
-         
-         throw new ClusterInfoException("join called on stopped MpClusterSlot (" + zkPath + 
-               ") on provided zookeeper instance.");
-
+         objectMapper = new ObjectMapper();
+         objectMapper.enableDefaultTyping();
+         objectMapper.configure(SerializationConfig.Feature.WRITE_EMPTY_JSON_ARRAYS, true);
+         objectMapper.configure(SerializationConfig.Feature.FAIL_ON_EMPTY_BEANS, false);
+         objectMapper.configure(SerializationConfig.Feature.WRITE_NULL_MAP_VALUES, true);
       }
 
-      @Override
-      public void setData(T data) throws ClusterInfoException 
-      {
-         setInfoToPath(zkPath,data,serializer);
-      }
-      
       @SuppressWarnings("unchecked")
       @Override
-      public T getData() throws ClusterInfoException
+      public TS deserialize(byte[] data) throws SerializationException
       {
-         return (T)readInfoFromPath(zkPath,serializer);
-      }
-      
-      @Override
-      public synchronized void leaveParent() throws ClusterInfoException
-      {
-         if (isRunning)
+         ArrayList<TS> info = null;
+         if(data != null)
          {
+            String jsonData = new String(data);
             try
             {
-               zkref.get().delete(zkPath.path,-1);
+               info = objectMapper.readValue(jsonData, ArrayList.class);
             }
-            catch(KeeperException e)
+            catch(Exception e)
             {
-               throw new ClusterInfoException("Failed to leave. " + 
-                     "Couldn't delete the node within zookeeper using \"" + zkPath + "\"",e);
-            }
-            catch(InterruptedException e)
-            {
-               throw new ClusterInfoException("Interrupted while trying to leave the cluster." + 
-                     "Couldn't delete the node within zookeeper using \"" + zkPath + "\"",e);
+               throw new SerializationException("Error occured while deserializing data "+jsonData, e);
             }
          }
-         else
-            throw new ClusterInfoException("leave called on stopped MpClusterSlot (" + zkPath + 
-                  ") on provided zookeeper instance.");
+         return (info != null && info.size()>0)?info.get(0):null;
       }
 
-      private class JSONSerializer<TS> implements Serializer<TS>
-      {
-         ObjectMapper objectMapper;
-         
-         public JSONSerializer()
-         {
-            objectMapper = new ObjectMapper();
-            objectMapper.enableDefaultTyping();
-            objectMapper.configure(SerializationConfig.Feature.WRITE_EMPTY_JSON_ARRAYS, true);
-            objectMapper.configure(SerializationConfig.Feature.FAIL_ON_EMPTY_BEANS, false);
-            objectMapper.configure(SerializationConfig.Feature.WRITE_NULL_MAP_VALUES, true);
-         }
-         
-         @SuppressWarnings("unchecked")
-         @Override
-         public TS deserialize(byte[] data) throws SerializationException
-         {
-            ArrayList<TS> info = null;
-            if(data != null)
-            {
-               String jsonData = new String(data);
-               try
-               {
-                  info = objectMapper.readValue(jsonData, ArrayList.class);
-               }
-               catch(Exception e)
-               {
-                  throw new SerializationException("Error occured while deserializing data "+jsonData, e);
-               }
-            }
-            return (info != null && info.size()>0)?info.get(0):null;
-         }
-         
-         @Override
-         public byte[] serialize(TS data) throws SerializationException 
-         {
-            String jsonData = null;
-            if(data != null)
-            {
-               ArrayList<TS> arr = new ArrayList<TS>();
-               arr.add(data);
-               try
-               {
-                  jsonData = objectMapper.writeValueAsString(arr);
-               }
-               catch(Exception e)
-               {
-                  throw new SerializationException("Error occured during serializing class " +
-                        SafeString.valueOfClass(data) + " with information "+SafeString.valueOf(data), e);
-               }
-            }
-            return (jsonData != null)?jsonData.getBytes():null;
-         }
-         
-      }
-   }
-
-   /**
-    * Helper class for calculating the path within zookeeper given the 
-    */
-   private static class ZookeeperPath
-   {
-      public static String root = "/";
-      public String path;
-      public boolean isRoot;
-      
-      public ZookeeperPath(ZookeeperLeaf<?> parent, String path)
-      {
-         isRoot = parent == null;
-         this.path = isRoot ? null : 
-            (parent.zkPath.path == null ? root : parent.zkPath.path) + path;
-      }
-      
-      public String toString() { return path; }
-   }
-   
-   /*
-    * Protected access is for testing.
-    */
-   protected class ZkWatcher implements Watcher
-   {
       @Override
-      public void process(WatchedEvent event)
+      public byte[] serialize(TS data) throws SerializationException 
       {
-         if (logger.isTraceEnabled())
-            logger.trace("CALLBACK:Main Watcher:" + event);
-      }
-   }
-   
-   private Object readInfoFromPath(ZookeeperPath path, Serializer<?> ser) throws ClusterInfoException
-   {
-      if (isRunning)
-      {
-         try
+         String jsonData = null;
+         if(data != null)
          {
-            byte[] ret = zkref.get().getData(path.path, true, null);
+            ArrayList<TS> arr = new ArrayList<TS>();
+            arr.add(data);
+            try
+            {
+               jsonData = objectMapper.writeValueAsString(arr);
+            }
+            catch(Exception e)
+            {
+               throw new SerializationException("Error occured during serializing class " +
+                     SafeString.valueOfClass(data) + " with information "+SafeString.valueOf(data), e);
+            }
+         }
+         return (jsonData != null)?jsonData.getBytes():null;
+      }
 
-            if (ret != null && ret.length > 0)
-               return ser.deserialize(ret);
-            return null;
-         }
-         // this is an indication that the node has disappeared since we retrieved 
-         // this MpContainerClusterNode
-         catch (KeeperException.NoNodeException e) { return null; }
-         catch (RuntimeException e) { throw e; } 
-         catch (Exception e) 
-         {
-            throw new ClusterInfoException("Failed to get node information for (" + path + ").",e);
-         }
-      }
-      return null;
-   }
-   
-   @SuppressWarnings("unchecked")
-   private void setInfoToPath(ZookeeperPath path, Object info, @SuppressWarnings("rawtypes") Serializer ser) throws ClusterInfoException
-   {
-      if (isRunning)
-      {
-         try
-         {
-            byte[] buf = null;
-            if (info != null)
-               // Serialize to a byte array
-               buf = ser.serialize(info);
-
-            zkref.get().setData(path.path, buf, -1);
-         }
-         catch (RuntimeException e) { throw e;} 
-         catch (Exception e) 
-         {
-            throw new ClusterInfoException("Failed to get node information for (" + path + ").",e);
-         }
-      }
    }
 
 }
