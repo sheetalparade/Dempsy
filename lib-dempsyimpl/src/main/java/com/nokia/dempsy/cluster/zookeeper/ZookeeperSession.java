@@ -48,7 +48,8 @@ public class ZookeeperSession implements ClusterInfoSession
 {
    private static Logger logger = LoggerFactory.getLogger(ZookeeperSession.class);
 
-   private volatile AtomicReference<ZooKeeper> zkref;
+   // Accessed from test.
+   protected volatile AtomicReference<ZooKeeper> zkref;
 
    private volatile boolean isRunning = true;
    protected long resetDelay = 500;
@@ -178,22 +179,23 @@ public class ZookeeperSession implements ClusterInfoSession
       try { curZk.get().close(); } catch (Throwable th) { /* let it go otherwise */ }
    }
    
+   protected static class ZkWatcher implements Watcher
+   {
+      @Override
+      public void process(WatchedEvent event)
+      {
+         if (logger.isTraceEnabled())
+            logger.trace("CALLBACK:Main Watcher:" + event);
+      }
+   }
+   
    /**
     * This is defined here to be overridden in a test.
     */
    protected ZooKeeper makeZooKeeperClient(String connectString, int sessionTimeout) throws IOException
    {
-      return new ZooKeeper(connectString, sessionTimeout, new Watcher()
-      {
-         @Override
-         public void process(WatchedEvent event)
-         {
-            if (logger.isTraceEnabled())
-               logger.trace("CALLBACK:Main Watcher:" + event);
-         }
-      });
+      return new ZooKeeper(connectString, sessionTimeout, new ZkWatcher());
    }
-
    
    private class WatcherProxy implements Watcher
    {
@@ -207,22 +209,29 @@ public class ZookeeperSession implements ClusterInfoSession
       @Override
       public void process(WatchedEvent event)
       {
-         synchronized(registeredWatchers)
+         // if we're disconnected then we need to reset and skip an
+         //  current processing.
+         if (event != null && event.getState() == Event.KeeperState.Disconnected)
+            resetZookeeper(zkref.get());
+         else
          {
-            registeredWatchers.remove(this);
-         }
-         
-         try
-         {
-            synchronized(this)
+            synchronized(registeredWatchers)
             {
-               watcher.process();
+               registeredWatchers.remove(this);
             }
-         }
-         catch (RuntimeException rte)
-         {
-            logger.warn("Watcher " + SafeString.objectDescription(watcher) + 
-                  " threw an exception in it's \"process\" call.",rte);
+
+            try
+            {
+               synchronized(this)
+               {
+                  watcher.process();
+               }
+            }
+            catch (RuntimeException rte)
+            {
+               logger.warn("Watcher " + SafeString.objectDescription(watcher) + 
+                     " threw an exception in it's \"process\" call.",rte);
+            }
          }
       }
    }
@@ -256,6 +265,10 @@ public class ZookeeperSession implements ClusterInfoSession
             if(logger.isDebugEnabled())
                logger.debug("Failed call to " + name + " at " + path);
             return false;
+         }
+         catch(KeeperException.NoNodeException e)
+         {
+            throw new ClusterInfoException.NoNodeException("Node doesn't exist at " + path + " while running " + name,e);
          }
          catch(KeeperException e)
          {
@@ -330,7 +343,13 @@ public class ZookeeperSession implements ClusterInfoSession
                   }
                   
                   // now notify the watchers
-                  for (WatcherProxy watcher : registeredWatchers)
+                  Collection<WatcherProxy> twatchers = new ArrayList<WatcherProxy>();
+                  synchronized(registeredWatchers)
+                  {
+                     twatchers.addAll(registeredWatchers);
+                  }
+                  
+                  for (WatcherProxy watcher : twatchers)
                      watcher.process(null);
                }
                else if (newZk != null)

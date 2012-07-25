@@ -23,4 +23,13 @@ public class ClusterInfoException extends Exception
    public ClusterInfoException(String message) { super(message); }
    
    public ClusterInfoException(String message, Throwable cause) { super(message,cause); }
+   
+   public static class NoNodeException extends ClusterInfoException
+   {
+      private static final long serialVersionUID = 1L;
+
+      public NoNodeException(String message) { super(message); }
+      
+      public NoNodeException(String message, Throwable cause) { super(message,cause); }
+   }
 }

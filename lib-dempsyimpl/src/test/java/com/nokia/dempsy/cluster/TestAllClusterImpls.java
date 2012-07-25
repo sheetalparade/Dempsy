@@ -16,6 +16,8 @@
 
 package com.nokia.dempsy.cluster;
 
+import static com.nokia.dempsy.TestUtils.createApplicationLevel;
+import static com.nokia.dempsy.TestUtils.createClusterLevel;
 import static com.nokia.dempsy.TestUtils.poll;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -29,6 +31,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
@@ -36,8 +39,8 @@ import org.junit.Test;
 import org.springframework.context.support.ClassPathXmlApplicationContext;
 
 import com.nokia.dempsy.TestUtils.Condition;
+import com.nokia.dempsy.cluster.zookeeper.ZookeeperTestServer.InitZookeeperServerBean;
 import com.nokia.dempsy.config.ClusterId;
-import com.nokia.dempsy.mpcluster.zookeeper.ZookeeperTestServer.InitZookeeperServerBean;
 
 public class TestAllClusterImpls
 {
@@ -89,22 +92,7 @@ public class TestAllClusterImpls
          actx.destroy();
       }
    }
-   
-   private static String createApplicationLevel(ClusterId cid, ClusterInfoSession session) throws ClusterInfoException
-   {
-      String ret = "/" + cid.getApplicationName();
-      session.mkdir(ret, false);
-      return ret;
-   }
-   
-   private static String createClusterLevel(ClusterId cid, ClusterInfoSession session) throws ClusterInfoException
-   {
-      String ret = createApplicationLevel(cid,session);
-      ret += ("/" + cid.getMpClusterName());
-      session.mkdir(ret, false);
-      return ret;
-   }
-   
+      
    private static String getClusterLeaf(ClusterId cid, ClusterInfoSession session) throws ClusterInfoException
    {
       return session.exists(cid.asPath(), null) ? cid.asPath() : null;
@@ -402,7 +390,7 @@ public class TestAllClusterImpls
                }
             });
             t2.start();
-
+            
             t1.join(30000);
             t2.join(30000); // use a timeout just in case. A failure should be indicated below if the thread never finishes.
 
@@ -447,6 +435,73 @@ public class TestAllClusterImpls
             
             session.stop();
          }
+      });
+   }
+   
+   @Test
+   public void testNullWatcherBehavior() throws Throwable
+   {
+      runAllCombinations(new Checker()
+      {
+         @Override
+         public void check(String pass, ClusterInfoSessionFactory factory) throws Throwable
+         {
+            final ClusterId cid = new ClusterId("test-app2","testNullWatcherBehavior");
+            final AtomicBoolean processCalled = new AtomicBoolean(false);
+            final ClusterInfoSession session = factory.createSession();
+            
+            assertNotNull(pass,session);
+            sessionsToClose.add(session);
+            String clusterPath = createClusterLevel(cid,session);
+            assertNotNull(pass,clusterPath);
+            
+            ClusterInfoWatcher watcher = new ClusterInfoWatcher()
+            {
+               @Override
+               public void process()
+               {
+                  processCalled.set(true);
+               }
+            };
+            
+            assertTrue(session.exists(cid.asPath(), watcher));
+
+            String data = "HelloThere";
+            session.setData(clusterPath,data);
+            
+            assertTrue(poll(5000, null, new Condition<Object>()
+            {
+               @Override
+               public boolean conditionMet(Object o) { return processCalled.get(); }
+            }));
+            
+            processCalled.set(false);
+            
+            String cdata = (String)session.getData(clusterPath,watcher);
+            assertEquals(pass,data,cdata);
+            
+            // add the null watcher ...
+            cdata = (String)session.getData(clusterPath,null);
+            assertEquals(pass,data,cdata);
+            
+            // but makes sure that it doesn't affect the callback
+            Thread.sleep(500); //just in case.
+            assertFalse(processCalled.get());
+
+            data += "2";
+            session.setData(clusterPath,data);
+            
+            assertTrue(poll(5000, null, new Condition<Object>()
+            {
+               @Override
+               public boolean conditionMet(Object o) { return processCalled.get(); }
+            }));
+            
+            cdata = (String)session.getData(clusterPath,null);
+            assertEquals(pass,data,cdata);
+            session.stop();
+         }
+         
       });
    }
    

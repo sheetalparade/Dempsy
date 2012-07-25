@@ -120,7 +120,7 @@ public class LocalClusterSessionFactory implements ClusterInfoSessionFactory
       Entry ret;
       ret = entries.get(absolutePath);
       if (ret == null)
-         throw new ClusterInfoException("Path \"" + absolutePath + "\" doesn't exists.");
+         throw new ClusterInfoException.NoNodeException("Path \"" + absolutePath + "\" doesn't exists.");
       if (watcher != null)
       {
          if (nodeWatch)

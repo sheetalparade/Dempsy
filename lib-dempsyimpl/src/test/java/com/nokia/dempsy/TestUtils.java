@@ -6,14 +6,10 @@ import java.util.List;
 
 import org.junit.Ignore;
 
+import com.nokia.dempsy.cluster.ClusterInfoException;
+import com.nokia.dempsy.cluster.ClusterInfoSession;
 import com.nokia.dempsy.config.ClusterId;
-import com.nokia.dempsy.mpcluster.MpCluster;
-import com.nokia.dempsy.mpcluster.MpClusterException;
-import com.nokia.dempsy.mpcluster.MpClusterSession;
-import com.nokia.dempsy.mpcluster.MpClusterSlot;
-import com.nokia.dempsy.router.ClusterInformation;
 import com.nokia.dempsy.router.DecentralizedRoutingStrategy;
-import com.nokia.dempsy.router.SlotInformation;
 
 @Ignore
 public class TestUtils
@@ -31,6 +27,21 @@ public class TestUtils
       return condition.conditionMet(userObject);
    }
    
+   public static String createApplicationLevel(ClusterId cid, ClusterInfoSession session) throws ClusterInfoException
+   {
+      String ret = "/" + cid.getApplicationName();
+      session.mkdir(ret, false);
+      return ret;
+   }
+   
+   public static String createClusterLevel(ClusterId cid, ClusterInfoSession session) throws ClusterInfoException
+   {
+      String ret = createApplicationLevel(cid,session);
+      ret += ("/" + cid.getMpClusterName());
+      session.mkdir(ret, false);
+      return ret;
+   }
+
    public static boolean waitForClustersToBeInitialized(long timeoutMillis, 
          final int numSlotsPerCluster, Dempsy dempsy) throws Throwable
    {
@@ -46,23 +57,22 @@ public class TestUtils
                   clusters.add(new ClusterId(cluster.clusterDefinition.getClusterId()));
          }
          
-         MpClusterSession<ClusterInformation, SlotInformation> session = dempsy.clusterSessionFactory.createSession();
-         boolean ret = poll(timeoutMillis, session, new Condition<MpClusterSession<ClusterInformation, SlotInformation>>()
+         ClusterInfoSession session = dempsy.clusterSessionFactory.createSession();
+         boolean ret = poll(timeoutMillis, session, new Condition<ClusterInfoSession>()
          {
             @Override
-            public boolean conditionMet(MpClusterSession<ClusterInformation, SlotInformation> session)
+            public boolean conditionMet(ClusterInfoSession session)
             {
                try
                {
                   for (ClusterId c : clusters)
                   {
-                     MpCluster<ClusterInformation, SlotInformation> cluster = session.getCluster(c);
-                     Collection<MpClusterSlot<SlotInformation>> slots = cluster.getActiveSlots();
+                     Collection<String> slots = session.getSubdirs(c.asPath(), null);
                      if (slots == null || slots.size() != numSlotsPerCluster)
                         return false;
                   }
                }
-               catch(MpClusterException e)
+               catch(ClusterInfoException e)
                {
                   return false;
                }
@@ -74,7 +84,7 @@ public class TestUtils
          session.stop();
          return ret;
       }
-      catch (MpClusterException e)
+      catch (ClusterInfoException e)
       {
          return false;
       }

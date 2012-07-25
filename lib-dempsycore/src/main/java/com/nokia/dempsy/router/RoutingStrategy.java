@@ -21,11 +21,11 @@ import java.util.Collection;
 import com.nokia.dempsy.DempsyException;
 import com.nokia.dempsy.annotations.MessageKey;
 import com.nokia.dempsy.annotations.MessageProcessor;
+import com.nokia.dempsy.cluster.ClusterInfoSession;
 import com.nokia.dempsy.config.ApplicationDefinition;
 import com.nokia.dempsy.config.ClusterDefinition;
 import com.nokia.dempsy.config.ClusterId;
 import com.nokia.dempsy.messagetransport.Destination;
-import com.nokia.dempsy.mpcluster.MpCluster;
 import com.nokia.dempsy.router.RoutingStrategy.Outbound.Coordinator;
 
 /**
@@ -161,7 +161,7 @@ public interface RoutingStrategy
     * with 'this' node.
     * @return the {@link Inbound} instance.
     */
-   public Inbound createInbound(MpCluster<ClusterInformation, SlotInformation> cluster, Collection<Class<?>> messageTypes, Destination thisDestination);
+   public Inbound createInbound(ClusterInfoSession cluster, ClusterId clusterId, Collection<Class<?>> messageTypes, Destination thisDestination);
    
    /**
     * The RoutingStrategy needs to create an {@link Outbound} that corresponds to the given cluster. It should do this
@@ -174,7 +174,7 @@ public interface RoutingStrategy
     * @return a new {@link Outbound} that manages the selection of a {@link Destination} given a message destined for 
     * the given cluster.
     */
-   public Outbound createOutbound(Outbound.Coordinator coordinator, MpCluster<ClusterInformation, SlotInformation> cluster);
+   public Outbound createOutbound(Outbound.Coordinator coordinator, ClusterInfoSession cluster, ClusterId clusterId);
    
 }
 
