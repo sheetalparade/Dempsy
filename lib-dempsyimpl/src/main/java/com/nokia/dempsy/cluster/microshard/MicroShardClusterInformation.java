@@ -16,6 +16,8 @@
 
 package com.nokia.dempsy.cluster.microshard;
 
+import java.util.Collection;
+
 import com.nokia.dempsy.router.ClusterInformation;
 import com.nokia.dempsy.router.RoutingStrategy;
 import com.nokia.dempsy.serialization.Serializer;
@@ -27,6 +29,7 @@ public class MicroShardClusterInformation extends ClusterInformation
    private RoutingStrategy routingStrategy;
    private Serializer<?> serializer;
    private Integer totalShards;
+   private Collection<Class<?>> messageTypes;
    
    public MicroShardClusterInformation()
    {
@@ -55,6 +58,14 @@ public class MicroShardClusterInformation extends ClusterInformation
    public void setTotalShards(Integer totalShards)
    {
       this.totalShards = totalShards;
+   }
+   public Collection<Class<?>> getMessageTypes()
+   {
+      return messageTypes;
+   }
+   public void setMessageTypes(Collection<Class<?>> messageClasses)
+   {
+      this.messageTypes = messageClasses;
    }
 
 }
