@@ -94,12 +94,12 @@ public class MicroShardStrategy implements RoutingStrategy
          if(!running.get()) return;
          
          cluster.mkdir("/"+this.clusterId.getApplicationName(), DirMode.PERSISTENT);
-         if(cluster.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName(), DirMode.PERSISTENT))
+         if(cluster.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName(), DirMode.PERSISTENT) != null)
          {
             cluster.setData("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName(), clusterInformation);
          }
          cluster.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/nodes", DirMode.PERSISTENT);
-         if(cluster.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/nodes/"+this.getNodeName(), DirMode.EPHEMERAL))
+         if(cluster.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/nodes/"+this.getNodeName(), DirMode.EPHEMERAL) != null)
          {
             thisInfo = new DefaultSlotInfo();
             thisInfo.setDestination(this.thisDestination);

@@ -70,7 +70,7 @@ public class ZookeeperSession implements ClusterInfoSession
    }
 
    @Override
-   public boolean mkdir(String path, DirMode mode) throws ClusterInfoException
+   public String mkdir(String path, DirMode mode) throws ClusterInfoException
    {
       Object ret = callZookeeper("mkdir", path, null, mode, new ZookeeperCall()
       {
@@ -81,7 +81,7 @@ public class ZookeeperSession implements ClusterInfoSession
             return true;
          }
       });
-      return ((Boolean)ret).booleanValue();
+      return (String)ret;
    }
 
    @Override

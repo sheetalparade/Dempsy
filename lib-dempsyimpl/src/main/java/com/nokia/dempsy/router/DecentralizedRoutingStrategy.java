@@ -459,7 +459,7 @@ public class DecentralizedRoutingStrategy implements RoutingStrategy
          Collection<Class<?>> messagesTypes, Destination destination) throws ClusterInfoException
    {
       String slotPath = clusterId.asPath() + "/" + String.valueOf(slotNum);
-      if (clusterHandle.mkdir(slotPath,DirMode.EPHEMERAL))
+      if (clusterHandle.mkdir(slotPath,DirMode.EPHEMERAL) != null)
       {
          DefaultRouterSlotInfo dest = (DefaultRouterSlotInfo)clusterHandle.getData(slotPath, null);
          if(dest == null)
