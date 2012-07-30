@@ -16,13 +16,13 @@
 
 package com.nokia.dempsy.cluster.microshard;
 
+import java.io.Serializable;
 import java.util.Collection;
 
-import com.nokia.dempsy.router.ClusterInformation;
 import com.nokia.dempsy.router.RoutingStrategy;
 import com.nokia.dempsy.serialization.Serializer;
 
-public class MicroShardClusterInformation extends ClusterInformation
+public class MicroShardClusterInformation implements Serializable
 {
    private static final long serialVersionUID = 1L;
    
