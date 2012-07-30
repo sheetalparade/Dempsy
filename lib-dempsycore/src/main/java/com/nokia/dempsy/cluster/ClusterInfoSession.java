@@ -28,13 +28,12 @@ public interface ClusterInfoSession
     * @param path a '/' separated path to a directory in the cluster information
     * manager.
     * 
-    * @return true if the directory was created. False if the directory already 
-    * exists.
+    * @return directory path if the directory was created . 
     * 
     * @throws ClusterInfoException on an error which can include the fact that the
     * parent directory doesn't exist.
     */
-   public boolean mkdir(String path, DirMode mode) throws ClusterInfoException;
+   public String mkdir(String path, DirMode mode) throws ClusterInfoException;
    
    /**
     * This will remove the directory stored at the path. The directory can be

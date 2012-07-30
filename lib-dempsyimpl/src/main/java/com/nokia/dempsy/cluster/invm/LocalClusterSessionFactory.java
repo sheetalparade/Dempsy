@@ -153,10 +153,10 @@ public class LocalClusterSessionFactory implements ClusterInfoSessionFactory
       return e != null;
    }
    
-   private synchronized boolean omkdir(String path) throws ClusterInfoException
+   private synchronized String omkdir(String path) throws ClusterInfoException
    {
       if (oexists(path,null))
-         return false;
+         return path;
       
       String parentPath = parent(path);
       Entry parent = null;
@@ -179,7 +179,7 @@ public class LocalClusterSessionFactory implements ClusterInfoSessionFactory
          parent.children.add(path.substring(lastSlash + 1));
          parent.callWatchers(false,true);
       }
-      return true;
+      return path;
    }
    
    private synchronized void ormdir(String path) throws ClusterInfoException
@@ -220,7 +220,7 @@ public class LocalClusterSessionFactory implements ClusterInfoSessionFactory
    {
 
       @Override
-      public boolean mkdir(String path, DirMode mode) throws ClusterInfoException
+      public String mkdir(String path, DirMode mode) throws ClusterInfoException
       {
          return omkdir(path);
       }
