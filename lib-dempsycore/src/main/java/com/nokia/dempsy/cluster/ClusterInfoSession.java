@@ -28,7 +28,8 @@ public interface ClusterInfoSession
     * @param path a '/' separated path to a directory in the cluster information
     * manager.
     * 
-    * @return directory path if the directory was created . 
+    * @return directory path if the directory was created. Null if the directory 
+    * cannot be created or already exists. 
     * 
     * @throws ClusterInfoException on an error which can include the fact that the
     * parent directory doesn't exist.

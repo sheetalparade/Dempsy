@@ -28,6 +28,7 @@ public class MicroShardManager
    private ClusterInfoSession clusterSession;
    private ClusterId clusterId;
    private AtomicBoolean leader = new AtomicBoolean(false);
+   private Integer seq;
 
    public MicroShardManager(ClusterInfoSession clusterSession, ClusterId clusterId) throws ClusterInfoException
    {
@@ -40,14 +41,37 @@ public class MicroShardManager
    {
       this.clusterSession.mkdir("/" + this.clusterId.getApplicationName(), DirMode.PERSISTENT);
       this.clusterSession.mkdir("/" + this.clusterId.getApplicationName()+"/manager", DirMode.PERSISTENT);
-      this.clusterSession.mkdir("/" + this.clusterId.getApplicationName()+"/manager/M_", DirMode.EPHEMERAL_SEQUENTIAL);
-      register();
+      if(seq != null && this.clusterSession.exists("/" + this.clusterId.getApplicationName()+"/manager/M_"+seq.intValue(), new ClusterInfoWatcher()
+      {
+         
+         @Override
+         public void process()
+         {
+            try
+            {
+               init();
+            }
+            catch(ClusterInfoException e)
+            {
+            }
+         }
+      }))
+      {
+         //Already exists.
+      }
+      else
+      {
+         String path = this.clusterSession.mkdir("/" + this.clusterId.getApplicationName()+"/manager/M_", DirMode.EPHEMERAL_SEQUENTIAL);
+         if(path == null) throw new ClusterInfoException("Unable to create ephemeral-sequential dir at "+"/" + this.clusterId.getApplicationName()+"/manager/M_");
+         seq = Integer.parseInt(path.substring(path.lastIndexOf("_")+1));
+      }
+      registerForLeaderElection();
       this.clusterSession.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName(), DirMode.PERSISTENT);
       this.clusterSession.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/shards", DirMode.PERSISTENT);
       getNodes();
    }
    
-   public void register() throws ClusterInfoException
+   public void registerForLeaderElection() throws ClusterInfoException
    {
       Collection<String> subDirs = this.clusterSession.getSubdirs("/" + this.clusterId.getApplicationName()+"/manager", new ClusterInfoWatcher()
       {
@@ -56,7 +80,7 @@ public class MicroShardManager
          {
             try
             {
-               register();
+               registerForLeaderElection();
             }
             catch(ClusterInfoException e)
             {
@@ -66,7 +90,11 @@ public class MicroShardManager
       SortedSet<Integer> leader = new TreeSet<Integer>();
       for(String dir: subDirs)
       {
-         leader.add(Integer.parseInt(dir.substring(2)));
+         leader.add(Integer.parseInt(dir.substring(dir.lastIndexOf("_")+1)));
+      }
+      if(leader.size()>0)
+      {
+         
       }
       
    }
