@@ -34,6 +34,7 @@ import com.nokia.dempsy.cluster.ClusterInfoException;
 import com.nokia.dempsy.cluster.ClusterInfoSession;
 import com.nokia.dempsy.cluster.ClusterInfoSessionFactory;
 import com.nokia.dempsy.cluster.ClusterInfoWatcher;
+import com.nokia.dempsy.cluster.DirMode;
 import com.nokia.dempsy.internal.util.SafeString;
 
 /**
@@ -219,7 +220,7 @@ public class LocalClusterSessionFactory implements ClusterInfoSessionFactory
    {
 
       @Override
-      public boolean mkdir(String path, boolean ephemeral) throws ClusterInfoException
+      public boolean mkdir(String path, DirMode mode) throws ClusterInfoException
       {
          return omkdir(path);
       }

@@ -40,6 +40,7 @@ import org.slf4j.LoggerFactory;
 import com.nokia.dempsy.cluster.ClusterInfoException;
 import com.nokia.dempsy.cluster.ClusterInfoSession;
 import com.nokia.dempsy.cluster.ClusterInfoWatcher;
+import com.nokia.dempsy.cluster.DirMode;
 import com.nokia.dempsy.internal.util.SafeString;
 import com.nokia.dempsy.serialization.SerializationException;
 import com.nokia.dempsy.serialization.Serializer;
@@ -69,14 +70,14 @@ public class ZookeeperSession implements ClusterInfoSession
    }
 
    @Override
-   public boolean mkdir(String path, boolean ephemeral) throws ClusterInfoException
+   public boolean mkdir(String path, DirMode mode) throws ClusterInfoException
    {
-      Object ret = callZookeeper("mkdir", path, null, ephemeral, new ZookeeperCall()
+      Object ret = callZookeeper("mkdir", path, null, mode, new ZookeeperCall()
       {
          @Override
          public Object call(ZooKeeper cur, String path, WatcherProxy watcher, Object userdata) throws KeeperException, InterruptedException, SerializationException
          {
-            cur.create(path, new byte[0], Ids.OPEN_ACL_UNSAFE, ((Boolean)userdata).booleanValue() ? CreateMode.EPHEMERAL : CreateMode.PERSISTENT);
+            cur.create(path, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.fromFlag(((DirMode)userdata).getFlag()));
             return true;
          }
       });

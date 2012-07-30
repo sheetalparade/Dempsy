@@ -37,6 +37,7 @@ import com.nokia.dempsy.TestUtils;
 import com.nokia.dempsy.TestUtils.Condition;
 import com.nokia.dempsy.cluster.ClusterInfoException;
 import com.nokia.dempsy.cluster.ClusterInfoWatcher;
+import com.nokia.dempsy.cluster.DirMode;
 import com.nokia.dempsy.config.ClusterId;
 
 /**
@@ -101,7 +102,7 @@ public class TestZookeeperClusterResilience
                   {
                      if (m_cluster.getSubdirs(clusterId.asPath(), this).size() == 0)
                      {
-                        m_cluster.mkdir(clusterId.asPath() + "/slot1",true);
+                        m_cluster.mkdir(clusterId.asPath() + "/slot1",DirMode.EPHEMERAL);
                         called.set(true);
                      }
                   }
@@ -240,7 +241,7 @@ public class TestZookeeperClusterResilience
          for (long endTime = System.currentTimeMillis() + baseTimeoutMillis; endTime > System.currentTimeMillis() && gotCorrectError;)
          {
             Thread.sleep(1);
-            try { session.mkdir(clusterId.asPath() + "/join-1", true); gotCorrectError = false; } catch (ClusterInfoException e) {  }
+            try { session.mkdir(clusterId.asPath() + "/join-1", DirMode.EPHEMERAL); gotCorrectError = false; } catch (ClusterInfoException e) {  }
          }
          
          assertFalse(gotCorrectError);

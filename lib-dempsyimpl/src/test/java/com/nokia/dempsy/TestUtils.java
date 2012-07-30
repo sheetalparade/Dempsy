@@ -8,6 +8,7 @@ import org.junit.Ignore;
 
 import com.nokia.dempsy.cluster.ClusterInfoException;
 import com.nokia.dempsy.cluster.ClusterInfoSession;
+import com.nokia.dempsy.cluster.DirMode;
 import com.nokia.dempsy.config.ClusterId;
 import com.nokia.dempsy.router.DecentralizedRoutingStrategy;
 
@@ -30,7 +31,7 @@ public class TestUtils
    public static String createApplicationLevel(ClusterId cid, ClusterInfoSession session) throws ClusterInfoException
    {
       String ret = "/" + cid.getApplicationName();
-      session.mkdir(ret, false);
+      session.mkdir(ret, DirMode.PERSISTENT);
       return ret;
    }
    
@@ -38,7 +39,7 @@ public class TestUtils
    {
       String ret = createApplicationLevel(cid,session);
       ret += ("/" + cid.getMpClusterName());
-      session.mkdir(ret, false);
+      session.mkdir(ret, DirMode.PERSISTENT);
       return ret;
    }
 

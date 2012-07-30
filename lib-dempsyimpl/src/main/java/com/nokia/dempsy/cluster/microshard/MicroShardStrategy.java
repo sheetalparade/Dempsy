@@ -27,9 +27,9 @@ import com.nokia.dempsy.DempsyException;
 import com.nokia.dempsy.cluster.ClusterInfoException;
 import com.nokia.dempsy.cluster.ClusterInfoSession;
 import com.nokia.dempsy.cluster.ClusterInfoWatcher;
+import com.nokia.dempsy.cluster.DirMode;
 import com.nokia.dempsy.config.ClusterId;
 import com.nokia.dempsy.messagetransport.Destination;
-import com.nokia.dempsy.router.ClusterInformation;
 import com.nokia.dempsy.router.RoutingStrategy;
 import com.nokia.dempsy.router.RoutingStrategy.Outbound.Coordinator;
 import com.nokia.dempsy.router.SlotInformation;
@@ -38,8 +38,9 @@ import com.nokia.dempsy.serialization.Serializer;
 public class MicroShardStrategy implements RoutingStrategy
 {
    
-   private MSInbound in = null;
+   private MSInbound inBound = null;
    private MicroShardClusterInformation clusterInformation;
+   private ConcurrentHashMap<ClusterId, Outbound> outbounds = new ConcurrentHashMap<ClusterId, RoutingStrategy.Outbound>();
 
    public MicroShardStrategy(Serializer<?> serializer, Integer totalShards)
    {
@@ -92,13 +93,13 @@ public class MicroShardStrategy implements RoutingStrategy
       {
          if(!running.get()) return;
          
-         cluster.mkdir("/"+this.clusterId.getApplicationName(), false);
-         if(cluster.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName(), false))
+         cluster.mkdir("/"+this.clusterId.getApplicationName(), DirMode.PERSISTENT);
+         if(cluster.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName(), DirMode.PERSISTENT))
          {
             cluster.setData("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName(), clusterInformation);
          }
-         cluster.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/nodes", false);
-         if(cluster.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/nodes/"+this.getNodeName(), true))
+         cluster.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/nodes", DirMode.PERSISTENT);
+         if(cluster.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/nodes/"+this.getNodeName(), DirMode.EPHEMERAL))
          {
             thisInfo = new DefaultSlotInfo();
             thisInfo.setDestination(this.thisDestination);
@@ -123,20 +124,7 @@ public class MicroShardStrategy implements RoutingStrategy
       
       private void getOwnShards() throws ClusterInfoException
       {
-         if(cluster.exists("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/shards", new ClusterInfoWatcher()
-         {
-            @Override
-            public void process()
-            {
-               try
-               {
-                  getOwnShards();
-               }
-               catch(ClusterInfoException e)
-               {
-               }
-            }
-         }))
+         if(cluster.exists("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/shards", null))
          {
             Collection<String> remoteShards = cluster.getSubdirs("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/shards", new ClusterInfoWatcher()
             {
@@ -188,6 +176,8 @@ public class MicroShardStrategy implements RoutingStrategy
       private Coordinator coordinator;
       private MicroShardClusterInformation clusterInformation;
       private ConcurrentHashMap<Integer, SlotInformation> shards = new ConcurrentHashMap<Integer, SlotInformation>();
+      private AtomicBoolean running = new AtomicBoolean(false);
+      private AtomicBoolean refresh = new AtomicBoolean(false);
       
       public MSOutbound(Coordinator coordinator, ClusterInfoSession clusterSession, ClusterId clusterId) throws ClusterInfoException
       {
@@ -221,6 +211,12 @@ public class MicroShardStrategy implements RoutingStrategy
       
       private void poplateDestinations() throws ClusterInfoException
       {
+         if(running.get())
+         {
+            refresh.set(true);
+            return;
+         }
+         running.set(true);
          if(this.clusterSession.exists("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName(), new ClusterInfoWatcher()
          {
             @Override
@@ -237,20 +233,7 @@ public class MicroShardStrategy implements RoutingStrategy
          }))
          {
             this.clusterInformation = (MicroShardClusterInformation) this.clusterSession.getData("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName(), null);
-            if(this.clusterSession.exists("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/shards", new ClusterInfoWatcher()
-            {
-               @Override
-               public void process()
-               {
-                  try
-                  {
-                     poplateDestinations();
-                  }
-                  catch(ClusterInfoException e)
-                  {
-                  }
-               }
-            }))
+            if(this.clusterSession.exists("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/shards", null))
             {
                Collection<String> remoteShards = this.clusterSession.getSubdirs("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/shards", new ClusterInfoWatcher()
                {
@@ -293,21 +276,27 @@ public class MicroShardStrategy implements RoutingStrategy
             }
             this.coordinator.registerOutbound(this, this.clusterInformation.getMessageTypes());
          }
+         if(refresh.get())
+         {
+            refresh.set(false);
+            poplateDestinations();
+         }
+         running.set(false);
       }
    }
 
    @Override
    public Inbound createInbound(ClusterInfoSession cluster, ClusterId clusterId, Collection<Class<?>> messageTypes, Destination thisDestination)
    {
-      if (in == null)
+      if (inBound == null)
       {
          synchronized(this)
          {
-            if(in == null)
+            if(inBound == null)
             {
                try
                {
-                  in = new MSInbound(cluster, clusterId, messageTypes, thisDestination);
+                  inBound = new MSInbound(cluster, clusterId, messageTypes, thisDestination);
                }
                catch(Exception e)
                {
@@ -316,20 +305,34 @@ public class MicroShardStrategy implements RoutingStrategy
             }
          }
       }
-      return in;
+      return inBound;
    }
 
    @Override
    public Outbound createOutbound(Coordinator coordinator, ClusterInfoSession cluster, ClusterId clusterId)
    {
-      try
+      Outbound outbound = outbounds.get(clusterId);
+      if(outbound != null)
       {
-         return new MSOutbound(coordinator, cluster, clusterId);
+         return outbound;
       }
-      catch(ClusterInfoException e)
+      synchronized(outbounds)
       {
-         return null;
+         outbound = outbounds.get(clusterId);
+         if(outbound != null)
+         {
+            return outbound;
+         }
+         try
+         {
+            outbound = new MSOutbound(coordinator, cluster, clusterId); 
+            outbounds.putIfAbsent(clusterId, outbound);
+         }
+         catch(ClusterInfoException e)
+         {
+            return null;
+         }
+         return outbound;
       }
    }
-
 }

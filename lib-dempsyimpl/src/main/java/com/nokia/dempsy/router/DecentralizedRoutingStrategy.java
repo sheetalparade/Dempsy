@@ -40,6 +40,7 @@ import com.nokia.dempsy.DempsyException;
 import com.nokia.dempsy.cluster.ClusterInfoException;
 import com.nokia.dempsy.cluster.ClusterInfoSession;
 import com.nokia.dempsy.cluster.ClusterInfoWatcher;
+import com.nokia.dempsy.cluster.DirMode;
 import com.nokia.dempsy.config.ClusterId;
 import com.nokia.dempsy.internal.util.SafeString;
 import com.nokia.dempsy.messagetransport.Destination;
@@ -421,8 +422,8 @@ public class DecentralizedRoutingStrategy implements RoutingStrategy
       catch (ClusterInfoException.NoNodeException e)
       {
          // mkdir and retry
-         session.mkdir("/" + clusterId.getApplicationName(),false);
-         session.mkdir(clusterId.asPath(),false);
+         session.mkdir("/" + clusterId.getApplicationName(),DirMode.PERSISTENT);
+         session.mkdir(clusterId.asPath(),DirMode.PERSISTENT);
          slotsFromClusterManager = session.getSubdirs(clusterId.asPath(), watcher);
       }
 
@@ -458,7 +459,7 @@ public class DecentralizedRoutingStrategy implements RoutingStrategy
          Collection<Class<?>> messagesTypes, Destination destination) throws ClusterInfoException
    {
       String slotPath = clusterId.asPath() + "/" + String.valueOf(slotNum);
-      if (clusterHandle.mkdir(slotPath,true))
+      if (clusterHandle.mkdir(slotPath,DirMode.EPHEMERAL))
       {
          DefaultRouterSlotInfo dest = (DefaultRouterSlotInfo)clusterHandle.getData(slotPath, null);
          if(dest == null)
