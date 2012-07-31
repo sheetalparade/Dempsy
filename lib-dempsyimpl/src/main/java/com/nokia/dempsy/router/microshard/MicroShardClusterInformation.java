@@ -14,19 +14,17 @@
  * limitations under the License.
  */
 
-package com.nokia.dempsy.cluster.microshard;
+package com.nokia.dempsy.router.microshard;
 
 import java.io.Serializable;
 import java.util.Collection;
 
-import com.nokia.dempsy.router.RoutingStrategy;
 import com.nokia.dempsy.serialization.Serializer;
 
 public class MicroShardClusterInformation implements Serializable
 {
    private static final long serialVersionUID = 1L;
    
-   private RoutingStrategy routingStrategy;
    private Serializer<?> serializer;
    private Integer totalShards;
    private Collection<Class<?>> messageTypes;
@@ -35,14 +33,6 @@ public class MicroShardClusterInformation implements Serializable
    {
    }
    
-   public RoutingStrategy getRoutingStrategy()
-   {
-      return routingStrategy;
-   }
-   public void setRoutingStrategy(RoutingStrategy routingStrategy)
-   {
-      this.routingStrategy = routingStrategy;
-   }
    public Serializer<?> getSerializer()
    {
       return serializer;

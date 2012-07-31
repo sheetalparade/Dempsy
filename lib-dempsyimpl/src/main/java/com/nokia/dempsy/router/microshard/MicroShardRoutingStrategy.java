@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.nokia.dempsy.cluster.microshard;
+package com.nokia.dempsy.router.microshard;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -35,14 +35,14 @@ import com.nokia.dempsy.router.RoutingStrategy.Outbound.Coordinator;
 import com.nokia.dempsy.router.SlotInformation;
 import com.nokia.dempsy.serialization.Serializer;
 
-public class MicroShardStrategy implements RoutingStrategy
+public class MicroShardRoutingStrategy implements RoutingStrategy
 {
    
    private MSInbound inBound = null;
    private MicroShardClusterInformation clusterInformation;
    private ConcurrentHashMap<ClusterId, Outbound> outbounds = new ConcurrentHashMap<ClusterId, RoutingStrategy.Outbound>();
 
-   public MicroShardStrategy(Serializer<?> serializer, Integer totalShards)
+   public MicroShardRoutingStrategy(Serializer<?> serializer, Integer totalShards)
    {
       this.clusterInformation = new MicroShardClusterInformation();
       this.clusterInformation.setSerializer(serializer);
@@ -58,6 +58,7 @@ public class MicroShardStrategy implements RoutingStrategy
       private AtomicBoolean running = new AtomicBoolean(true);
       private SlotInformation thisInfo = null;
       private CopyOnWriteArraySet<Integer> ownShards = new CopyOnWriteArraySet<Integer>();
+      private MicroShardUtils utils;
       
       public MSInbound(ClusterInfoSession cluster, ClusterId clusterId, Collection<Class<?>> messageTypes, Destination thisDestination) throws ClusterInfoException, UnknownHostException
       {
@@ -65,7 +66,7 @@ public class MicroShardStrategy implements RoutingStrategy
          this.messageTypes = messageTypes;
          this.thisDestination = thisDestination;
          this.clusterId = clusterId;
-         clusterInformation.setRoutingStrategy(MicroShardStrategy.this);
+         this.utils = new MicroShardUtils(this.clusterId);
          clusterInformation.setMessageTypes(messageTypes);
          register();
       }
@@ -82,7 +83,7 @@ public class MicroShardStrategy implements RoutingStrategy
          running.set(false);
          try
          {
-            cluster.rmdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/nodes/"+this.getNodeName());
+            cluster.rmdir(this.utils.getNodesDir()+"/"+this.getNodeName());
          }
          catch(Exception e)
          {
@@ -93,22 +94,22 @@ public class MicroShardStrategy implements RoutingStrategy
       {
          if(!running.get()) return;
          
-         cluster.mkdir("/"+this.clusterId.getApplicationName(), DirMode.PERSISTENT);
-         if(cluster.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName(), DirMode.PERSISTENT) != null)
+         cluster.mkdir(this.utils.getAppDIr(), DirMode.PERSISTENT);
+         if(cluster.mkdir(this.utils.getClusterDir(), DirMode.PERSISTENT) != null)
          {
-            cluster.setData("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName(), clusterInformation);
+            cluster.setData(this.utils.getClusterDir(), clusterInformation);
          }
-         cluster.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/nodes", DirMode.PERSISTENT);
-         if(cluster.mkdir("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/nodes/"+this.getNodeName(), DirMode.EPHEMERAL) != null)
+         cluster.mkdir(this.utils.getNodesDir(), DirMode.PERSISTENT);
+         if(cluster.mkdir(this.utils.getNodesDir()+"/"+this.getNodeName(), DirMode.EPHEMERAL) != null)
          {
             thisInfo = new DefaultSlotInfo();
             thisInfo.setDestination(this.thisDestination);
             thisInfo.setMessageClasses(this.messageTypes);
             
-            cluster.setData("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/nodes/"+this.getNodeName(), thisInfo);
+            cluster.setData(this.utils.getNodesDir()+"/"+this.getNodeName(), thisInfo);
          }
          
-         cluster.exists("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/nodes/"+this.getNodeName(), new ClusterInfoWatcher()
+         cluster.exists(this.utils.getNodesDir()+"/"+this.getNodeName(), new ClusterInfoWatcher()
          {
             @Override
             public void process()
@@ -124,9 +125,9 @@ public class MicroShardStrategy implements RoutingStrategy
       
       private void getOwnShards() throws ClusterInfoException
       {
-         if(cluster.exists("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/shards", null))
+         if(cluster.exists(this.utils.getShardsDir(), null))
          {
-            Collection<String> remoteShards = cluster.getSubdirs("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/shards", new ClusterInfoWatcher()
+            Collection<String> remoteShards = cluster.getSubdirs(this.utils.getShardsDir(), new ClusterInfoWatcher()
             {
                @Override
                public void process()
@@ -144,7 +145,7 @@ public class MicroShardStrategy implements RoutingStrategy
             {
                for(String shard: remoteShards)
                {
-                  SlotInformation info = (SlotInformation)cluster.getData("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/shards/"+shard, null);
+                  SlotInformation info = (SlotInformation)cluster.getData(this.utils.getShardsDir()+"/"+shard, null);
                   if(info != null && info.equals(this.thisInfo))
                   {
                      this.ownShards.add(Integer.valueOf(shard));
@@ -178,12 +179,14 @@ public class MicroShardStrategy implements RoutingStrategy
       private ConcurrentHashMap<Integer, SlotInformation> shards = new ConcurrentHashMap<Integer, SlotInformation>();
       private AtomicBoolean running = new AtomicBoolean(false);
       private AtomicBoolean refresh = new AtomicBoolean(false);
+      private MicroShardUtils utils;
       
       public MSOutbound(Coordinator coordinator, ClusterInfoSession clusterSession, ClusterId clusterId) throws ClusterInfoException
       {
          this.clusterId = clusterId;
          this.clusterSession = clusterSession;
          this.coordinator = coordinator;
+         this.utils = new MicroShardUtils(this.clusterId);
          poplateDestinations();
       }
       
@@ -216,8 +219,9 @@ public class MicroShardStrategy implements RoutingStrategy
             refresh.set(true);
             return;
          }
+         refresh.set(false);
          running.set(true);
-         if(this.clusterSession.exists("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName(), new ClusterInfoWatcher()
+         if(this.clusterSession.exists(utils.getClusterDir(), new ClusterInfoWatcher()
          {
             @Override
             public void process()
@@ -232,10 +236,10 @@ public class MicroShardStrategy implements RoutingStrategy
             }
          }))
          {
-            this.clusterInformation = (MicroShardClusterInformation) this.clusterSession.getData("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName(), null);
-            if(this.clusterSession.exists("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/shards", null))
+            this.clusterInformation = (MicroShardClusterInformation) this.clusterSession.getData(this.utils.getClusterDir(), null);
+            if(this.clusterSession.exists(this.utils.getShardsDir(), null))
             {
-               Collection<String> remoteShards = this.clusterSession.getSubdirs("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/shards", new ClusterInfoWatcher()
+               Collection<String> remoteShards = this.clusterSession.getSubdirs(this.utils.getShardsDir(), new ClusterInfoWatcher()
                {
                   @Override
                   public void process()
@@ -253,7 +257,7 @@ public class MicroShardStrategy implements RoutingStrategy
                {
                   for(String shard : remoteShards)
                   {
-                     SlotInformation slotInformation = (SlotInformation)this.clusterSession.getData("/"+this.clusterId.getApplicationName()+"/"+this.clusterId.getMpClusterName()+"/shards/"+shard, new ClusterInfoWatcher()
+                     SlotInformation slotInformation = (SlotInformation)this.clusterSession.getData(this.utils.getShardsDir()+"/"+shard, new ClusterInfoWatcher()
                      {
                         @Override
                         public void process()
@@ -276,12 +280,11 @@ public class MicroShardStrategy implements RoutingStrategy
             }
             this.coordinator.registerOutbound(this, this.clusterInformation.getMessageTypes());
          }
+         running.set(false);
          if(refresh.get())
          {
-            refresh.set(false);
             poplateDestinations();
          }
-         running.set(false);
       }
    }
 
