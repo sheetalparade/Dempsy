@@ -1,13 +1,17 @@
 /*
  * Copyright 2012 the original author or authors.
- * 
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the
- * License at
- * 
- * http://www.apache.org/licenses/LICENSE-2.0
- * 
- * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
- * CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package com.nokia.dempsy.router.microshard;
@@ -24,6 +28,9 @@ import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.nokia.dempsy.cluster.ClusterInfoException;
 import com.nokia.dempsy.cluster.ClusterInfoSession;
 import com.nokia.dempsy.cluster.ClusterInfoWatcher;
@@ -33,11 +40,12 @@ import com.nokia.dempsy.router.SlotInformation;
 
 public class MicroShardManager
 {
+   private Logger logger = LoggerFactory.getLogger(MicroShardManager.class);
    private ClusterInfoSession clusterSession;
    private ClusterId clusterId;
    private AtomicBoolean leader = new AtomicBoolean(false);
    private Integer seq;
-   MicroShardClusterInformation clusterInformation;
+   private MicroShardClusterInformation clusterInformation;
    private MicroShardUtils utils;
    private AtomicBoolean running = new AtomicBoolean(false);
    private AtomicBoolean refresh = new AtomicBoolean(false);
@@ -66,6 +74,7 @@ public class MicroShardManager
             }
             catch(ClusterInfoException e)
             {
+               logger.error("Error during callback for com.nokia.dempsy.router.microshard.MicroShardManager.init()", e);
             }
          }
       }))
@@ -82,7 +91,17 @@ public class MicroShardManager
       registerForLeaderElection();
       this.clusterSession.mkdir(this.utils.getClusterDir(), DirMode.PERSISTENT);
       this.clusterSession.mkdir(this.utils.getShardsDir(), DirMode.PERSISTENT);
+      this.clusterSession.mkdir(this.utils.getNodesDir(), DirMode.PERSISTENT);
       manageNodes();
+   }
+   
+   public void stop() throws ClusterInfoException
+   {
+      if(seq != null)
+      {
+         this.clusterSession.rmdir(this.utils.getManagerDir()+"/M_"+seq);
+         seq = null;
+      }
    }
 
    private void registerForLeaderElection() throws ClusterInfoException
@@ -98,6 +117,7 @@ public class MicroShardManager
             }
             catch(ClusterInfoException e)
             {
+               logger.error("Error during callback for com.nokia.dempsy.router.microshard.MicroShardManager.registerForLeaderElection()", e);
             }
          }
       });
@@ -126,12 +146,15 @@ public class MicroShardManager
                   }
                   catch(ClusterInfoException e)
                   {
+                     logger.error("Error during callback for com.nokia.dempsy.router.microshard.MicroShardManager.registerForLeaderElection()", e);
                   }
                }
             });
          }
       }
    }
+   
+   public boolean isLeader(){ return this.leader.get();}
 
    private void manageNodes() throws ClusterInfoException
    {
@@ -154,6 +177,7 @@ public class MicroShardManager
             }
             catch(Exception e)
             {
+               logger.error("Error during callback for com.nokia.dempsy.router.microshard.MicroShardManager.manageNodes()", e);
             }
          }
       });
@@ -168,6 +192,7 @@ public class MicroShardManager
             }
             catch(Exception e)
             {
+               logger.error("Error during callback for com.nokia.dempsy.router.microshard.MicroShardManager.manageNodes()", e);
             }
          }
       });
@@ -183,6 +208,7 @@ public class MicroShardManager
             }
             catch(Exception e)
             {
+               logger.error("Error during callback for com.nokia.dempsy.router.microshard.MicroShardManager.manageNodes()", e);
             }
          }
       });
@@ -224,6 +250,7 @@ public class MicroShardManager
                   }
                   catch(Exception e)
                   {
+                     logger.error("Error during callback for com.nokia.dempsy.router.microshard.MicroShardManager.manageNodes()", e);
                   }
                }
             });
@@ -249,6 +276,7 @@ public class MicroShardManager
                }
                catch(Exception e)
                {
+                  logger.error("Error during callback for com.nokia.dempsy.router.microshard.MicroShardManager.manageNodes()", e);
                }
             }
          });
@@ -274,6 +302,7 @@ public class MicroShardManager
    
    private void assignSlots() throws ClusterInfoException
    {
+      if(this.clusterInformation == null) return;
       int totalAssignedShards = 0;
       List<Integer> assignedShards = new ArrayList<Integer>(this.clusterInformation.getTotalShards());
       for(List<Integer> list : this.nodeMap.values())

@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
@@ -218,11 +219,11 @@ public class LocalClusterSessionFactory implements ClusterInfoSessionFactory
    
    public class LocalSession implements ClusterInfoSession
    {
-
+      AtomicInteger seq = new AtomicInteger();
       @Override
       public String mkdir(String path, DirMode mode) throws ClusterInfoException
       {
-         return omkdir(path);
+         return omkdir(mode.toString().indexOf("SEQUENTIAL")!=-1?path+seq.getAndIncrement():path);
       }
 
       @Override

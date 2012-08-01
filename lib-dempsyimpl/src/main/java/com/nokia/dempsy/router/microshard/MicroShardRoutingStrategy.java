@@ -23,12 +23,16 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.nokia.dempsy.DempsyException;
 import com.nokia.dempsy.cluster.ClusterInfoException;
 import com.nokia.dempsy.cluster.ClusterInfoSession;
 import com.nokia.dempsy.cluster.ClusterInfoWatcher;
 import com.nokia.dempsy.cluster.DirMode;
 import com.nokia.dempsy.config.ClusterId;
+import com.nokia.dempsy.internal.util.SafeString;
 import com.nokia.dempsy.messagetransport.Destination;
 import com.nokia.dempsy.router.RoutingStrategy;
 import com.nokia.dempsy.router.RoutingStrategy.Outbound.Coordinator;
@@ -37,7 +41,7 @@ import com.nokia.dempsy.serialization.Serializer;
 
 public class MicroShardRoutingStrategy implements RoutingStrategy
 {
-   
+   private Logger logger = LoggerFactory.getLogger(MicroShardRoutingStrategy.class);
    private MSInbound inBound = null;
    private MicroShardClusterInformation clusterInformation;
    private ConcurrentHashMap<ClusterId, Outbound> outbounds = new ConcurrentHashMap<ClusterId, RoutingStrategy.Outbound>();
@@ -59,6 +63,7 @@ public class MicroShardRoutingStrategy implements RoutingStrategy
       private SlotInformation thisInfo = null;
       private CopyOnWriteArraySet<Integer> ownShards = new CopyOnWriteArraySet<Integer>();
       private MicroShardUtils utils;
+      private MicroShardManager manager;
       
       public MSInbound(ClusterInfoSession cluster, ClusterId clusterId, Collection<Class<?>> messageTypes, Destination thisDestination) throws ClusterInfoException, UnknownHostException
       {
@@ -68,6 +73,7 @@ public class MicroShardRoutingStrategy implements RoutingStrategy
          this.clusterId = clusterId;
          this.utils = new MicroShardUtils(this.clusterId);
          clusterInformation.setMessageTypes(messageTypes);
+         manager = new MicroShardManager(cluster, clusterId);
          register();
       }
 
@@ -81,12 +87,16 @@ public class MicroShardRoutingStrategy implements RoutingStrategy
       public void stop()
       {
          running.set(false);
+         String dir=null;
          try
          {
-            cluster.rmdir(this.utils.getNodesDir()+"/"+this.getNodeName());
+            if(manager != null) manager.stop();
+            dir = this.utils.getNodesDir()+"/"+this.getNodeName();
+            cluster.rmdir(dir);
          }
          catch(Exception e)
          {
+            logger.error("Error removing directory " + dir, e);
          }
       }
       
@@ -117,6 +127,7 @@ public class MicroShardRoutingStrategy implements RoutingStrategy
                try{ register(); }
                catch(Exception e)
                {
+                  logger.error("Error during callback for com.nokia.dempsy.router.microshard.MicroShardRoutingStrategy.MSInbound.register()", e);
                }
             }
          });
@@ -138,6 +149,7 @@ public class MicroShardRoutingStrategy implements RoutingStrategy
                   }
                   catch(ClusterInfoException e)
                   {
+                     logger.error("Error during callback for com.nokia.dempsy.router.microshard.MicroShardRoutingStrategy.MSInbound.getOwnShards()", e);
                   }
                }
             });
@@ -232,6 +244,7 @@ public class MicroShardRoutingStrategy implements RoutingStrategy
                }
                catch(ClusterInfoException e)
                {
+                  logger.error("Error during callback for com.nokia.dempsy.router.microshard.MicroShardRoutingStrategy.MSOutbound.poplateDestinations()", e);
                }
             }
          }))
@@ -250,6 +263,7 @@ public class MicroShardRoutingStrategy implements RoutingStrategy
                      }
                      catch(ClusterInfoException e)
                      {
+                        logger.error("Error during callback for com.nokia.dempsy.router.microshard.MicroShardRoutingStrategy.MSOutbound.poplateDestinations()", e);
                      }
                   }
                });
@@ -268,6 +282,7 @@ public class MicroShardRoutingStrategy implements RoutingStrategy
                            }
                            catch(ClusterInfoException e)
                            {
+                              logger.error("Error during callback for com.nokia.dempsy.router.microshard.MicroShardRoutingStrategy.MSOutbound.poplateDestinations()", e);
                            }
                         }
                      });
@@ -303,6 +318,8 @@ public class MicroShardRoutingStrategy implements RoutingStrategy
                }
                catch(Exception e)
                {
+                  logger.error("Error creating Inbound for Cluster "+SafeString.valueOf(clusterId)
+                        + "with cluster session "+SafeString.objectDescription(cluster), e);
                   return null;
                }
             }
@@ -333,6 +350,8 @@ public class MicroShardRoutingStrategy implements RoutingStrategy
          }
          catch(ClusterInfoException e)
          {
+            logger.error("Error creating outboud for cluster "+SafeString.valueOf(clusterId)
+                  + "with cluster info session "+SafeString.objectDescription(cluster), e);
             return null;
          }
          return outbound;
