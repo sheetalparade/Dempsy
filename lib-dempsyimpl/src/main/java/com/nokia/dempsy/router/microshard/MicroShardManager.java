@@ -214,16 +214,17 @@ public class MicroShardManager
          }
       });
 
-      updateShardsInCache(nodes, shards);
-
       if(this.leader.get())
       {
          assignSlots(nodes, shards);
       }
       
+      updateShardsInCache(nodes, shards);
+
       this.running.set(false);
       if(this.refresh.get())
       {
+         this.refresh.set(false);
          manageNodes();
       }
    }
@@ -240,7 +241,7 @@ public class MicroShardManager
       {
          for(String shard : shards)
          {
-            SlotInformation slotInformation = (SlotInformation)this.clusterSession.getData(shard, new ClusterInfoWatcher()
+            SlotInformation slotInformation = (SlotInformation)this.clusterSession.getData(this.utils.getShardsDir()+"/"+shard, new ClusterInfoWatcher()
             {
                @Override
                public void process()
@@ -259,7 +260,7 @@ public class MicroShardManager
             {
                List<Integer> list = slots.get(slotInformation);
                if(list == null) list = new ArrayList<Integer>();
-               list.add(Integer.parseInt(shard.substring(shard.lastIndexOf('/'))));
+               list.add(Integer.parseInt(shard));
                slots.put(slotInformation, list);
             }
          }
@@ -296,7 +297,7 @@ public class MicroShardManager
       for(Iterator<String> iterator = set.iterator(); iterator.hasNext();)
       {
          String string = iterator.next();
-         if(slots.containsKey(string)) continue;
+         if(nodes.contains(string)) continue;
          else iterator.remove();
       }
    }
@@ -354,9 +355,15 @@ public class MicroShardManager
                list.add(shard);
                assignedShards.add(shard);
             }
-            this.clusterSession.rmdir(this.utils.getShardsDir()+"/"+shard);
+            try
+            {
+               this.clusterSession.rmdir(this.utils.getShardsDir()+"/"+shard);
+            }
+            catch(Exception e)
+            {
+            }
             this.clusterSession.mkdir(this.utils.getShardsDir()+"/"+shard, DirMode.PERSISTENT);
-            this.clusterSession.setData(this.utils.getShardsDir()+"/"+shard, this.clusterSession.getData(node, new ClusterInfoWatcher()
+            this.clusterSession.setData(this.utils.getShardsDir()+"/"+shard, this.clusterSession.getData(this.utils.getNodesDir()+"/"+node, new ClusterInfoWatcher()
             {
                @Override
                public void process()
@@ -387,7 +394,11 @@ public class MicroShardManager
                {
                   shard = random.nextInt(this.clusterInformation.getTotalShards());
                }
-               if(list == null) list = new ArrayList<Integer>();
+               if(list == null)
+               {
+                  list = new ArrayList<Integer>();
+                  this.nodeMap.putIfAbsent(node, list);
+               }
                list.add(shard);
                assignedShards.add(shard);
                try
@@ -396,10 +407,10 @@ public class MicroShardManager
                }
                catch(Exception e)
                {
-                  logger.error("Directory might not be there "+this.utils.getShardsDir()+"/"+shard, e);
+//                  logger.error("Directory might not be there "+this.utils.getShardsDir()+"/"+shard, e);
                }
                this.clusterSession.mkdir(this.utils.getShardsDir()+"/"+shard, DirMode.PERSISTENT);
-               this.clusterSession.setData(this.utils.getShardsDir()+"/"+shard, this.clusterSession.getData(node, new ClusterInfoWatcher()
+               this.clusterSession.setData(this.utils.getShardsDir()+"/"+shard, this.clusterSession.getData(this.utils.getNodesDir()+"/"+node, new ClusterInfoWatcher()
                {
                   @Override
                   public void process()
