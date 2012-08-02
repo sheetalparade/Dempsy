@@ -50,6 +50,7 @@ public class MicroShardManager
    private AtomicBoolean running = new AtomicBoolean(false);
    private AtomicBoolean refresh = new AtomicBoolean(false);
    private ConcurrentHashMap<String, List<Integer>> nodeMap = new ConcurrentHashMap<String, List<Integer>>();
+   private AtomicBoolean iAmAssigningNodes = new AtomicBoolean(false); // only for unit testing
 
    public MicroShardManager(ClusterInfoSession clusterSession, ClusterId clusterId) throws ClusterInfoException
    {
@@ -217,7 +218,7 @@ public class MicroShardManager
 
       if(this.leader.get())
       {
-         assignSlots();
+         assignSlots(nodes, shards);
       }
       
       this.running.set(false);
@@ -265,7 +266,7 @@ public class MicroShardManager
       }
       for(String node : nodes)
       {
-         SlotInformation info = (SlotInformation)this.clusterSession.getData(node, new ClusterInfoWatcher()
+         SlotInformation info = (SlotInformation)this.clusterSession.getData(this.utils.getNodesDir()+"/"+node, new ClusterInfoWatcher()
          {
             @Override
             public void process()
@@ -300,8 +301,9 @@ public class MicroShardManager
       }
    }
    
-   private void assignSlots() throws ClusterInfoException
+   private void assignSlots(Collection<String> nodes, Collection<String> shards) throws ClusterInfoException
    {
+      this.iAmAssigningNodes.set(true);
       if(this.clusterInformation == null) return;
       int totalAssignedShards = 0;
       List<Integer> assignedShards = new ArrayList<Integer>(this.clusterInformation.getTotalShards());
@@ -314,14 +316,16 @@ public class MicroShardManager
       if(totalAssignedShards == this.clusterInformation.getTotalShards())
          return; //Nothing to do. everything is up to date
       
-      int maxShardCount = (int)Math.ceil((double)this.clusterInformation.getTotalShards()/(double)this.nodeMap.size());
-      int minShardCount = this.clusterInformation.getTotalShards()/this.nodeMap.size();
+      if(nodes.size()==0) return ; //no nodes to assign
+      
+      int maxShardCount = (int)Math.ceil((double)this.clusterInformation.getTotalShards()/(double)nodes.size());
+      int minShardCount = this.clusterInformation.getTotalShards()/nodes.size();
 
       List<Integer> reassignShards = new ArrayList<Integer>();
-      for(String node : this.nodeMap.keySet())
+      for(String node : nodes)
       {
          List<Integer> list = this.nodeMap.get(node);
-         int overAssign = maxShardCount - list.size();
+         int overAssign = (list!=null?list.size():0) - maxShardCount;
          while(overAssign > 0)
          {
             reassignShards.add(list.remove(0));
@@ -329,10 +333,10 @@ public class MicroShardManager
          }
       }
       Random random = new Random();
-      for(String node : this.nodeMap.keySet())
+      for(String node : nodes)
       {
          List<Integer> list = this.nodeMap.get(node);
-         int underAssign = list.size() - minShardCount;
+         int underAssign = (list!=null?list.size():0) - minShardCount;
          while(underAssign > 0)
          {
             int shard = -1;
@@ -352,30 +356,68 @@ public class MicroShardManager
             }
             this.clusterSession.rmdir(this.utils.getShardsDir()+"/"+shard);
             this.clusterSession.mkdir(this.utils.getShardsDir()+"/"+shard, DirMode.PERSISTENT);
-            this.clusterSession.setData(this.utils.getShardsDir()+"/"+shard, this.clusterSession.getData(node, null));
+            this.clusterSession.setData(this.utils.getShardsDir()+"/"+shard, this.clusterSession.getData(node, new ClusterInfoWatcher()
+            {
+               @Override
+               public void process()
+               {
+                  try
+                  {
+                     manageNodes();
+                  }
+                  catch(Exception e)
+                  {
+                     logger.error("Error during callback for com.nokia.dempsy.router.microshard.MicroShardManager.manageNodes()", e);
+                  }
+               }
+            }));
             underAssign = list.size() - minShardCount;;
          }
       }
       
       while(assignedShards.size() < this.clusterInformation.getTotalShards())
       {
-         for(String node : this.nodeMap.keySet())
+         for(String node : nodes)
          {
             List<Integer> list = this.nodeMap.get(node);
-            if(list.size()<maxShardCount)
+            if((list!= null?list.size():0)<maxShardCount)
             {
                int shard = random.nextInt(this.clusterInformation.getTotalShards());
                while(assignedShards.contains(shard))
                {
                   shard = random.nextInt(this.clusterInformation.getTotalShards());
                }
+               if(list == null) list = new ArrayList<Integer>();
                list.add(shard);
                assignedShards.add(shard);
-               this.clusterSession.rmdir(this.utils.getShardsDir()+"/"+shard);
+               try
+               {
+                  this.clusterSession.rmdir(this.utils.getShardsDir()+"/"+shard);
+               }
+               catch(Exception e)
+               {
+                  logger.error("Directory might not be there "+this.utils.getShardsDir()+"/"+shard, e);
+               }
                this.clusterSession.mkdir(this.utils.getShardsDir()+"/"+shard, DirMode.PERSISTENT);
-               this.clusterSession.setData(this.utils.getShardsDir()+"/"+shard, this.clusterSession.getData(node, null));
+               this.clusterSession.setData(this.utils.getShardsDir()+"/"+shard, this.clusterSession.getData(node, new ClusterInfoWatcher()
+               {
+                  @Override
+                  public void process()
+                  {
+                     try
+                     {
+                        manageNodes();
+                     }
+                     catch(Exception e)
+                     {
+                        logger.error("Error during callback for com.nokia.dempsy.router.microshard.MicroShardManager.manageNodes()", e);
+                     }
+                  }
+               }));
             }
          }
       }
    }
+
+   protected boolean getiAmAssigningNodes(){ return iAmAssigningNodes.get(); }
 }

@@ -23,8 +23,10 @@ import org.junit.Test;
 
 import com.nokia.dempsy.cluster.ClusterInfoException;
 import com.nokia.dempsy.cluster.ClusterInfoSession;
+import com.nokia.dempsy.cluster.DirMode;
 import com.nokia.dempsy.cluster.invm.LocalClusterSessionFactory;
 import com.nokia.dempsy.config.ClusterId;
+import com.nokia.dempsy.router.SlotInformation;
 
 public class MicroShardManagerTest
 {
@@ -78,6 +80,34 @@ public class MicroShardManagerTest
       m1.stop();
       Assert.assertFalse(m2.isLeader());
       Assert.assertTrue(m3.isLeader());
+      m1 = new MicroShardManager(session, new ClusterId("Test", "Test"));
+      Assert.assertFalse(m2.isLeader());
+      Assert.assertTrue(m3.isLeader());
+      Assert.assertFalse(m1.isLeader());
+   }
+   
+   @Test
+   public void testManageNode() throws ClusterInfoException
+   {
+      MicroShardManager m1 = new MicroShardManager(session, new ClusterId("Test", "Test"));
+      Assert.assertTrue(m1.isLeader());
+      MicroShardManager m2 = new MicroShardManager(session, new ClusterId("Test", "Test"));
+      Assert.assertFalse(m2.isLeader());
+      MicroShardManager m3 = new MicroShardManager(session, new ClusterId("Test", "Test"));
+      Assert.assertFalse(m3.isLeader());
+      
+      MicroShardClusterInformation clusterInformation = new MicroShardClusterInformation();
+      clusterInformation.setTotalShards(10);
+      session.setData("/Test/Test", clusterInformation);
+      Assert.assertTrue(m1.getiAmAssigningNodes());
+      Assert.assertFalse(m2.getiAmAssigningNodes());
+      Assert.assertFalse(m3.getiAmAssigningNodes());
+      session.mkdir("/Test/Test/nodes/1", DirMode.EPHEMERAL);
+      session.setData("/Test/Test/nodes/1", new SlotInformation(){private static final long serialVersionUID = 1L;});
+      Assert.assertTrue(m1.getiAmAssigningNodes());
+      Assert.assertFalse(m2.getiAmAssigningNodes());
+      Assert.assertFalse(m3.getiAmAssigningNodes());
+      Assert.assertEquals(10, session.getSubdirs("/Test/Test/shards", null).size());
    }
 
 }
